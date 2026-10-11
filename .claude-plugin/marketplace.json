@@ -1,13 +1,17 @@
 {
   "name": "mochi-crew",
-  "owner": { "name": "joeVenner", "url": "https://github.com/joeVenner" },
-  "metadata": { "description": "Mochi, a pixel-art cat companion for Claude Code." },
+  "owner": {
+    "name": "joeVenner",
+    "url": "https://github.com/joeVenner"
+  },
+  "metadata": {
+    "description": "Mochi, a pixel-art cat companion for Claude Code."
+  },
   "plugins": [
     {
       "name": "mochi-crew",
       "source": "./plugins/mochi-crew",
       "description": "Mod: a pixel cat in a side pane that reacts to your real session, with a crew of kitten subagents, XP, missions and a session journal.",
-      "version": "1.0.0",
       "category": "mod"
     }
   ]
