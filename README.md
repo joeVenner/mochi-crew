@@ -184,6 +184,17 @@ Type-checking (`npx -y -p typescript@5.6.3 tsc -p .`) uses the engine type defin
 Code writes to `.claude-plugin/types/` when it loads the plugin, so load it once (install it, or
 start Claude Code with `--plugin-dir plugins/mochi-crew`) before running `tsc`.
 
+### Releasing
+
+This repository is itself a Claude Code plugin marketplace: `.claude-plugin/marketplace.json` at the
+root lists the plugin in `plugins/mochi-crew`. Users keep a cached copy and receive a new one only
+when the plugin's version changes, so for every release:
+
+1. Bump `version` in `plugins/mochi-crew/.claude-plugin/plugin.json` (the only place it is set).
+2. Run `claude plugin validate .` from the repository root.
+3. Merge to `main`. Users get it with `/plugin marketplace update mochi-crew`, or automatically if
+   they turned on auto-update.
+
 The logic is pure and unit-tested in `hooks/*.ts`. `hooks/register.tsx` only wires engine events,
 state and the pane.
 
