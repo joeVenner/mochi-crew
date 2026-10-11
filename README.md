@@ -4,6 +4,8 @@
 
 # Mochi Crew
 
+<sub><i>Mochi means "my cat" in Moroccan Darija.</i></sub>
+
 **A pixel-art cat that lives in your Claude Code side pane and reacts to what your session is really doing.**
 
 Mochi types when Claude edits, grabs a hammer when a command runs, thinks along while Claude works,
