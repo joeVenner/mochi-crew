@@ -164,10 +164,13 @@ Commands:
 
 ```bash
 cd plugins/mochi-crew
-claude plugin validate .
-npx -y -p typescript@5.6.3 tsc -p .
-claude plugin test .
+claude plugin validate .   # manifest and hooks
+claude plugin test .       # the test suite
 ```
+
+Type-checking (`npx -y -p typescript@5.6.3 tsc -p .`) uses the engine type definitions that Claude
+Code writes to `.claude-plugin/types/` when it loads the plugin, so load it once (install it, or
+start Claude Code with `--plugin-dir plugins/mochi-crew`) before running `tsc`.
 
 The logic is pure and unit-tested in `hooks/*.ts`. `hooks/register.tsx` only wires engine events,
 state and the pane.
