@@ -34,6 +34,18 @@ claude plugin install mochi-crew@mochi-crew
 
 The pane opens on its own when a session starts. Run `/mascot` to open it again.
 
+### Updating
+
+New releases bump the plugin's version. To pick one up:
+
+```
+/plugin marketplace update mochi-crew
+```
+
+Or turn on auto-update once: open `/plugin`, go to **Marketplaces**, select `mochi-crew`, and choose
+**Enable auto-update**. If an install from inside a session fails on a machine without a GitHub SSH
+key, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` and try again.
+
 > **Tip:** Mochi is drawn with half-block pixels. If your terminal adds extra line spacing,
 > setting it to `1.0` keeps the pixel art solid.
 
