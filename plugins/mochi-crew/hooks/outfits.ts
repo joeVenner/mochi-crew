@@ -1,0 +1,88 @@
+import type { OutfitName } from '../types'
+
+/**
+ * Mochi's outfits: pixel overlays drawn over the cat. Each row is a pixel
+ * row relative to the cat's top-left; `top` may be negative for hats.
+ */
+export type OutfitOverlay = { top: number; rows: readonly string[] }
+
+export const OUTFITS: Readonly<Record<OutfitName, readonly OutfitOverlay[]>> = {
+  classic: [],
+  wizard: [{
+    top: -3,
+    rows: [
+      '.......VV.......',
+      '......VVYV......',
+      '.....VVVVVV.....',
+      '...VVVVVVVVVV...',
+    ],
+  }],
+  pirate: [
+    {
+      top: -2,
+      rows: [
+        '....KKKKKKKK....',
+        '...KKKKWWKKKK...',
+        '..KKKKKKKKKKKK..',
+      ],
+    },
+    // Eye patch strap across the face, over the right eye.
+    { top: 3, rows: ['..KKKKKKKKKKKK..', '..........KK....'] },
+  ],
+  party: [{
+    top: -3,
+    rows: [
+      '.......Y........',
+      '......PP........',
+      '.....YYYY.......',
+      '....PPPPPP......',
+    ],
+  }],
+  shades: [{ top: 3, rows: ['...KKKKKKKKKK...', '....WK....WK....'] }],
+  crown: [{
+    top: -2,
+    rows: [
+      '....Y..YY..Y....',
+      '....YYYPYYYY....',
+      '....YYYYYYYY....',
+    ],
+  }],
+}
+
+export const OUTFIT_NAMES: readonly OutfitName[] = ['classic', 'wizard', 'pirate', 'party', 'shades', 'crown']
+export const DEFAULT_OUTFIT: OutfitName = 'classic'
+
+export const isOutfitName = (value: unknown): value is OutfitName =>
+  typeof value === 'string' && Object.hasOwn(OUTFITS, value)
+
+/** What `/mascot <args>` asks for. */
+export type MascotCommand =
+  | { kind: 'open' }
+  | { kind: 'list' }
+  | { kind: 'achievements' }
+  | { kind: 'journal' }
+  | { kind: 'missions' }
+  | { kind: 'outfit'; name: OutfitName }
+  | { kind: 'sound'; isOn: boolean }
+  | { kind: 'react'; reaction: 'pet' | 'feed' | 'dance' }
+  | { kind: 'error'; message: string }
+
+export const MASCOT_USAGE = 'usage: /mascot [pet | feed | dance | journal | missions | achievements | outfits | outfit <name> | sound on|off]'
+
+/** Parses `/mascot` arguments; never throws, an unknown request is an `error` with usage. */
+export const parseMascotCommand = (args: string): MascotCommand => {
+  const [verb, value, ...rest] = args.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (verb === undefined) return { kind: 'open' }
+  if (rest.length > 0) return { kind: 'error', message: MASCOT_USAGE }
+  if (verb === 'outfits' && value === undefined) return { kind: 'list' }
+  if (verb === 'achievements' && value === undefined) return { kind: 'achievements' }
+  if (verb === 'journal' && value === undefined) return { kind: 'journal' }
+  if (verb === 'missions' && value === undefined) return { kind: 'missions' }
+  if ((verb === 'pet' || verb === 'feed' || verb === 'dance') && value === undefined) return { kind: 'react', reaction: verb }
+  if (verb === 'outfit') {
+    if (isOutfitName(value)) return { kind: 'outfit', name: value }
+    return { kind: 'error', message: `unknown outfit "${value ?? ''}"; try: ${OUTFIT_NAMES.join(', ')}` }
+  }
+  if (verb === 'sound' && (value === 'on' || value === 'off')) return { kind: 'sound', isOn: value === 'on' }
+  return { kind: 'error', message: MASCOT_USAGE }
+}

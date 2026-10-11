@@ -1,0 +1,4 @@
+node_modules/
+.DS_Store
+# Engine-provided type definitions, laid down by Claude Code when the plugin loads.
+plugins/*/.claude-plugin/types/
