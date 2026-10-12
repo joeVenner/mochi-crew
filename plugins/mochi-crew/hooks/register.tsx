@@ -722,6 +722,8 @@ const endTurn = async ($: EngineInterface, turnId: string, outcome: TurnOutcome,
     isDuplicate = completed.isDuplicate
     return completed.turn
   })
+  // The turn is handed back: no file is in hand any more, the tree points at the last one.
+  if (!isDuplicate) await update($, treeFocus, (): TreeFocus | null => NO_FOCUS)
   if (!isDuplicate) await note($, { kind: 'turn', durationMs })
   if (bonus > 0) {
     await note($, { kind: 'shipped' })
@@ -1131,7 +1133,9 @@ const noteTreeFile = ($: EngineInterface, file: string, { kind, isLive, agentId 
  * Opens a file of the tree in the person's editor. The path must resolve inside the project;
  * only windowed editors are run, by argument vector, never through a shell.
  */
-const openInEditor = async ($: EngineInterface, path: string): Promise<string> => {
+const openInEditor = async ($: EngineInterface, path: string, surface: string): Promise<string> => {
+  // Commands run only from the terminal CLI; a desktop or editor surface has no host to run on.
+  if (surface !== 'terminal') return 'Opening a file from the tree works in the terminal app only.'
   const root = await $.session.root()
   const rootReal = (await $.fs.stat(root, { resolve: true })).realPath ?? root
   const relative = relativeTo(root, path)
@@ -1366,7 +1370,7 @@ export const register: Register = on => {
       )
       if (row.kind !== 'file') return <Text key={`tree:${row.key}`}>{pieces}</Text>
       return (
-        <Button key={`file:${row.key}`} plain onPress={() => void pressButton($, () => openInEditor($, row.key))}>
+        <Button key={`file:${row.key}`} plain onPress={press => void pressButton($, () => openInEditor($, row.key, press.surface))}>
           {pieces}
         </Button>
       )

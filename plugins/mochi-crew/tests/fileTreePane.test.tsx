@@ -137,6 +137,23 @@ describe('file tree pane', () => {
     await ui.unmount()
   })
 
+  test('once the turn is handed back, the tree points at the last file, not a live one', async ($, on) => {
+    mock.clock(on)
+    mock.store(on)
+    project(on)
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: paneProps(30) })
+
+    await $.turn.start({ text: 'fix it', turnId: 't1' })
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/README.md', old_string: 'a', new_string: 'b' })
+    await shows(ui, 'editing hooks/README.md')
+    await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' })
+
+    await shows(ui, 'last hooks/README.md')
+    await ui.unmount()
+  })
+
   test('/mochi files turns the tree off and on, and is saved', async ($, on) => {
     mock.clock(on)
     const saved = new Map<string, unknown>()
