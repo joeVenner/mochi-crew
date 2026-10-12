@@ -11,7 +11,7 @@ import type { CareEvent } from './care'
 import { FRESH_CARE, activeReaction, applyCare, careAt, feelingOf, parseCare } from './care'
 import { MAX_VISIBLE_WORKERS, XP_PER_WORKER, hatOf, isOnStage, isRunningStatus, joinWorker, markFinished, pruneWorkers, rejoinWorker, workerCallEnded, workerCallStarted, workerEdited, workerFinished } from './crew'
 import { EMPTY_STATS, applyEdit, levelOf, parseStats } from './game'
-import { barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, vitalNote } from './hud'
+import { BAR_GLYPH, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, vitalNote } from './hud'
 import type { JournalEvent } from './journal'
 import { EMPTY_JOURNAL, journalLine, journalReport, record } from './journal'
 import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyCompleted } from './missions'
@@ -33,11 +33,6 @@ const SCENE_KEY = 'scene'
 const ACCENT = 'claude'
 /** The empty part of a bar: a muted line in the same weight as the fill. */
 const TRACK = '#454a55'
-/**
- * Bars are drawn with a heavy line glyph, not background-colored cells: a background fills
- * the whole line height, so bars on consecutive rows merged into one block.
- */
-const BAR_GLYPH = '━'
 /** Theme colors kept for meaning only: something needs you, or it is your turn. */
 const THEME = { alert: 'error', good: 'success' } as const
 const TICK_MS = 180
