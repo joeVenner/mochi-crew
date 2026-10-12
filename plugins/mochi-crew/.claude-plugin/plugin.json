@@ -2,23 +2,10 @@
   "name": "mochi-crew",
   "version": "1.1.0",
   "description": "A pixel-art cat companion that lives in a side pane and reacts to your real Claude Code session: edits, commands, subagents, turns, tests and bugs, with XP, missions, a session journal, and a session meter for model, context, prompt cache and limits or cost.",
-  "author": {
-    "name": "joeVenner",
-    "url": "https://github.com/joeVenner"
-  },
+  "author": { "name": "joeVenner", "url": "https://github.com/joeVenner" },
   "homepage": "https://github.com/joeVenner/mochi-crew",
   "repository": "https://github.com/joeVenner/mochi-crew",
   "license": "MIT",
-  "keywords": [
-    "companion",
-    "pixel-art",
-    "pet",
-    "gamification",
-    "hud",
-    "mod",
-    "context",
-    "prompt-cache",
-    "usage"
-  ],
+  "keywords": ["companion", "pixel-art", "pet", "gamification", "hud", "mod", "context", "prompt-cache", "usage"],
   "types": "./types/index.d.ts"
 }
