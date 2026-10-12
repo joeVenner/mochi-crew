@@ -12,6 +12,7 @@ npm ci
 npm run studio      # preview and scrub in the browser
 npm run voice       # regenerate changed voice lines (needs OPENAI_API_KEY)
 npm run render      # out/mochi-promo.mp4, 1920×1080, about 51 s
+npm run thumbnail   # out/thumbnail.png, the video's 1920×1080 cover
 npm run typecheck
 ```
 
