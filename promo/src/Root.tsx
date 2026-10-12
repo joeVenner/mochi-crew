@@ -11,6 +11,7 @@ import { Meter } from './scenes/Meter'
 import { Outro } from './scenes/Outro'
 import { Session } from './scenes/Session'
 import { FPS, HEIGHT, VOICE_LEAD_SECONDS, WIDTH, seconds } from './theme'
+import { Thumbnail } from './Thumbnail'
 import { Fade } from './ui'
 
 /** Breathing room after a scene's line before the cut. */
@@ -59,6 +60,7 @@ const fitToVoice: CalculateMetadataFunction<Props> = async () => {
 const DEFAULT_LENGTHS: Readonly<Record<SceneId, number>> = Object.fromEntries(SCENES.map(({ id, minimum }) => [id, seconds(minimum)])) as Record<SceneId, number>
 
 export const Root = () => (
+  <>
   <Composition
     id="MochiPromo"
     component={MochiPromo}
@@ -69,4 +71,7 @@ export const Root = () => (
     defaultProps={{ lengths: DEFAULT_LENGTHS }}
     calculateMetadata={fitToVoice}
   />
+  {/* The video's cover image: npm run thumbnail. */}
+  <Composition id="Thumbnail" component={Thumbnail} durationInFrames={1} fps={FPS} width={WIDTH} height={HEIGHT} />
+  </>
 )

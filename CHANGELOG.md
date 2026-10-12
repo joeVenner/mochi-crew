@@ -12,6 +12,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - `promo/`: a Remotion project that renders a promo video, drawing Mochi, the crew, the session
   meter and the file tree with the plugin's own code, with an OpenAI text-to-speech voice-over. It
   is not part of the installed plugin.
+- `npm run thumbnail` in `promo/`: a 1920×1080 cover still for the video, drawn with the plugin's
+  own scene and file tree.
 
 ## [1.2.0] - 2026-10-12
 

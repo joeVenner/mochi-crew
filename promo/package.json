@@ -5,6 +5,7 @@
   "scripts": {
     "studio": "remotion studio",
     "still": "remotion still MochiPromo out/still.png",
+    "thumbnail": "remotion still Thumbnail out/thumbnail.png",
     "render": "remotion render MochiPromo out/mochi-promo.mp4",
     "typecheck": "tsc --noEmit",
     "voice": "node scripts/voice.mts"

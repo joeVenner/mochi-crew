@@ -286,7 +286,8 @@ Code writes to `.claude-plugin/types/` when it loads the plugin, so load it once
 start Claude Code with `--plugin-dir plugins/mochi-crew`) before running `tsc`.
 
 The promo video lives in [`promo/`](promo/README.md), a Remotion project that draws Mochi with the
-plugin's own renderer. It is not part of what the marketplace installs.
+plugin's own renderer, plus a cover still (`npm run thumbnail`). It is not part of what the
+marketplace installs.
 
 ### Releasing
 
