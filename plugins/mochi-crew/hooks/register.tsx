@@ -94,6 +94,10 @@ const XP_PER_SQUASH = 15
 // Module-local animation state; a reload restarts it, which only resets a blink.
 let tick = 0
 let ticker: Timer | undefined
+// Off the terminal there is no animation ticker, so this redraws the HUD for time-based text
+// (the meter's idle time) on its own slow beat.
+let hudRefresh: Timer | undefined
+const HUD_REFRESH_MS = 30_000
 // Main-loop tool calls running now. Module-local: a reload mid-call only under-counts, which at
 // worst lets a long-quiet turn expire.
 let mainCallsRunning = 0
@@ -909,12 +913,16 @@ const startMeter = async ($: EngineInterface): Promise<void> => {
   try {
     providerEnv = await readProviderEnv($)
     ttlEnv = await readTtlEnv($)
-    await resetConversation($)
-    await refreshModel($)
-    await refreshProvider($, [])
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: meter could not start: ${String(error)}`, { to: 'debug' })
   }
+  // Separate from the model read, so a failing model lookup still leaves the provider known.
+  await refreshProvider($, []).catch((error: unknown) =>
+    $.ui.log(`mochi-crew: meter could not detect the provider: ${String(error)}`, { to: 'debug' }),
+  )
+  await refreshModel($).catch((error: unknown) =>
+    $.ui.log(`mochi-crew: meter could not read the model: ${String(error)}`, { to: 'debug' }),
+  )
 }
 
 /**
@@ -943,6 +951,10 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     // Every ending closes this conversation's figures, a /clear and a resume included.
     await resetConversation($)
+    if (e.reason === 'prompt_input_exit' || e.reason === 'logout' || e.reason === 'other') {
+      hudRefresh?.cancel()
+      hudRefresh = undefined
+    }
     return next(e)
   }).catch(($, e, next) => (logFailure($, 'session.end', next.error), next(e)))
 
@@ -956,13 +968,18 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     await loadSaved($)
-    await startMeter($)
+    // Local state only, so it is cheap to await; done first so no turn is counted and then wiped.
+    await resetConversation($).catch((error: unknown) =>
+      $.ui.log(`mochi-crew: meter could not reset: ${String(error)}`, { to: 'debug' }),
+    )
     await $.command.register({
       name: 'mascot',
       description: 'Open the Mochi crew pane, read the session journal or meter, change outfit, toggle sound',
       argumentHint: '[journal | missions | achievements | meter | outfits | outfit <name> | sound on|off]',
     })
     void $.ui.open({ id: PANE, title: TITLE })
+    // The host reads go off the start-up path, so Mochi and /mascot never wait on them.
+    void startMeter($).catch((error: unknown) => $.ui.log(`mochi-crew: meter could not start: ${String(error)}`, { to: 'debug' }))
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -1037,7 +1054,9 @@ export const register: Register = on => {
     void (agentId === undefined ? endTurn($, e.turnId, outcome, e.durationMs) : releaseWorker($, agentId)).catch((error: unknown) =>
       $.ui.log(`mochi-crew: could not follow a turn's end: ${String(error)}`, { to: 'debug' }),
     )
-    void noteMeterTurn($, e)
+    void noteMeterTurn($, e).catch((error: unknown) =>
+      $.ui.log(`mochi-crew: meter could not count a turn: ${String(error)}`, { to: 'debug' }),
+    )
     return completed
   }).catch(($, e, next) => next(e))
 
@@ -1178,6 +1197,7 @@ export const register: Register = on => {
 
     if (e.surface !== 'terminal') {
       // Raster is terminal-only; other surfaces get the HUD alone.
+      hudRefresh ??= $.clock.every(HUD_REFRESH_MS, () => $.ui.invalidate('ui.render'))
       return hud
     }
 

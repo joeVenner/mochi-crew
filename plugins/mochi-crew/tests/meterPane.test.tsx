@@ -105,6 +105,19 @@ describe('session meter in the pane', () => {
     }
   })
 
+  test('idle time keeps counting on the desktop, where no animation ticker runs', async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on)
+    await start($)
+    await $.session.measure(measureEvent())
+    await $.turn.complete(turnEvent(10, 10, 10))
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...PANE, props: paneProps() })
+    await lacks(ui, '  idle 2m')
+    await clock.advance(2 * 60_000 + 1_000)
+    await shows(ui, '  idle 2m')
+    await ui.unmount()
+  })
+
   test('subagent turns stay out of the cache rate', async ($, on) => {
     mock.clock(on)
     engine(on)
