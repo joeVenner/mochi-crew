@@ -15,13 +15,16 @@ export type HudExtras = {
   workerCount: number
   /** Session meter rows showing (none before its first measurement), its rule not included. */
   meterRows: number
+  /** The file tree's line: its header, or the one folded `files` line. */
+  hasTreeLine?: boolean
 }
 
 const NO_EXTRAS: HudExtras = { hasBubble: false, hasTurnLine: false, workerCount: 0, meterRows: 0 }
 
 /** Rows the full HUD needs right now: the fixed rows plus whatever optional rows are showing. */
-export const fullHudRows = ({ hasBubble, hasTurnLine, workerCount, meterRows }: HudExtras): number =>
+export const fullHudRows = ({ hasBubble, hasTurnLine, workerCount, meterRows, hasTreeLine = false }: HudExtras): number =>
   FULL_HUD_ROWS +
+  Number(hasTreeLine) +
   Number(hasBubble) +
   Number(hasTurnLine) +
   Math.min(workerCount, MAX_VISIBLE_WORKERS) +
@@ -42,6 +45,14 @@ export type HudPlan = {
 export const hudPlan = (bodyRows: number, sceneRows: number, extras: HudExtras = NO_EXTRAS): HudPlan => ({
   isCompact: bodyRows < sceneRows + fullHudRows(extras),
 })
+
+/**
+ * Rows left for the file tree's entries under the full HUD (which already holds the tree's
+ * header line), less the rule above the tree. The entries only take what is left over; the
+ * one line the tree always keeps counts in the HUD, so the controls never scroll away.
+ */
+export const treeBudget = (bodyRows: number, sceneRows: number, extras: HudExtras): number =>
+  Math.max(0, bodyRows - sceneRows - fullHudRows({ ...extras, hasTreeLine: true }) - 1)
 
 /**
  * Bars are drawn with a heavy line glyph, not background-colored cells: a background fills
