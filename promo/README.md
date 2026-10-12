@@ -1,8 +1,9 @@
 # Mochi Crew promo
 
 The promo video, made with [Remotion](https://www.remotion.dev). It draws Mochi, the crew, the
-session meter and the file tree with the plugin's own code (`sceneFor`, `meterRows`, `treeRows`, the HUD helpers), imported
-through `src/plugin.ts`, so the video always shows what the plugin really draws.
+session meter and the file tree with the plugin's own code (`sceneFor`, `meterRows`, `treeRows`,
+the HUD helpers), imported through `src/plugin.ts`, so the video always shows what the plugin
+really draws.
 
 This folder is not part of the plugin: the marketplace installs `plugins/mochi-crew` only.
 
@@ -17,8 +18,9 @@ npm run typecheck
 ```
 
 Remotion ships its own ffmpeg and downloads its own headless browser on first use, and the two
-Google Fonts (JetBrains Mono, Press Start 2P) load at render time, so rendering needs network. Remotion is free for individuals, non-profits and companies of up to 3 employees; larger companies need a
-[company license](https://www.remotion.dev/license).
+Google Fonts (JetBrains Mono, Press Start 2P) load at render time, so rendering needs network.
+Remotion is free for individuals, non-profits and companies of up to 3 employees; larger companies
+need a [company license](https://www.remotion.dev/license).
 
 ## Voice-over
 
