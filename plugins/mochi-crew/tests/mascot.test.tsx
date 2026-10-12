@@ -576,9 +576,9 @@ describe('hud fit', () => {
     on('agent.list', () => ({
       value: [1, 2, 3].map(n => ({ id: `fit${n}`, type: 'Explore', description: 'scan', status: 'running' as AgentStatus })),
     }))
-    // Scene (16 rows) + the 10 fixed HUD rows + the hire quip's bubble + one worker row.
+    // Scene (16 rows) + the 10 fixed HUD rows + the files line + the hire quip's bubble + one worker row.
     const ui = await $.ui.mount({
-      plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 28 } },
+      plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 29 } },
     })
     const spawn = (n: number) => $.agent.spawn({
       tool_use_id: `toolu_test_fit${n}`,

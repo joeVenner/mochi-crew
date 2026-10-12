@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { Worker } from '../types'
-import { FULL_HUD_ROWS, GUTTER, fullHudRows, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, vitalNote } from '../hooks/hud'
+import { FULL_HUD_ROWS, GUTTER, fullHudRows, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, treeBudget, vitalNote } from '../hooks/hud'
 import { missionCount } from '../hooks/missions'
 
 const worker = (id: string, type: string): Worker => ({ id, type, description: 'x', joinedAt: 0 })
@@ -76,5 +76,15 @@ describe('instrument panel layout', () => {
     expect(vitalNote(16)).toBe('low')
     expect(vitalNote(25)).toBe('')
     expect(missionCount(['green'])).toBe('1/4')
+  })
+
+  test('the file tree takes only the rows the full HUD leaves, its header counted in the HUD', async () => {
+    const quiet = { hasBubble: false, hasTurnLine: false, workerCount: 0, meterRows: 0 }
+    expect(fullHudRows({ ...quiet, hasTreeLine: true })).toBe(FULL_HUD_ROWS + 1)
+    // Scene 16, HUD 10, header 1, rule 1: a 40-row pane leaves 12 rows for entries.
+    expect(treeBudget(40, 16, quiet)).toBe(12)
+    expect(treeBudget(20, 16, quiet)).toBe(0)
+    // The tree never makes the HUD compact on its own: the plan ignores the tree's entries.
+    expect(hudPlan(16 + FULL_HUD_ROWS + 1, 16, { ...quiet, hasTreeLine: true }).isCompact).toBe(false)
   })
 })

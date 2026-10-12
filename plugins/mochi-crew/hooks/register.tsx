@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput } from 'claude-code'
 
-import type { Bug, CacheTotals, Care, CrewStats, Gadget, Journal, Measure, Provider, TurnLedger, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
+import type { Bug, CacheTotals, Care, CrewStats, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
 import { mascotXAt, settle } from './behavior'
@@ -11,7 +11,10 @@ import type { CareEvent } from './care'
 import { FRESH_CARE, activeReaction, applyCare, careAt, feelingOf, parseCare } from './care'
 import { MAX_VISIBLE_WORKERS, XP_PER_WORKER, hatOf, isOnStage, isRunningStatus, joinWorker, markFinished, pruneWorkers, rejoinWorker, workerCallEnded, workerCallStarted, workerEdited, workerFinished } from './crew'
 import { EMPTY_STATS, applyEdit, levelOf, parseStats } from './game'
-import { BAR_GLYPH, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, vitalNote } from './hud'
+import { BAR_GLYPH, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, treeBudget, vitalNote } from './hud'
+import { launchersFor } from './editor'
+import type { TreeRow } from './fileTree'
+import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, parseGitStatus, parseNumstat, relativeTo, rowParts, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
 import type { JournalEvent } from './journal'
 import { EMPTY_JOURNAL, journalLine, journalReport, record } from './journal'
 import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyCompleted } from './missions'
@@ -62,7 +65,7 @@ const POLL_EVERY_TICKS = 6
 const MAX_STEP_FAILURES = 20
 
 /** Keys in $.store, which outlives the session. */
-const STORE = { stats: 'stats', outfit: 'outfit', isSoundOn: 'isSoundOn', care: 'care', achievements: 'achievements' } as const
+const STORE = { stats: 'stats', outfit: 'outfit', isSoundOn: 'isSoundOn', care: 'care', achievements: 'achievements', isTreeOn: 'treeOn' } as const
 
 const SOUNDS = { done: 'sounds/done.wav', levelUp: 'sounds/levelup.wav', join: 'sounds/join.wav' } as const
 type Sound = (typeof SOUNDS)[keyof typeof SOUNDS]
@@ -89,6 +92,13 @@ const journal = atom({ plugin: 'mochi-crew', key: 'journal' } as const, EMPTY_JO
 const ledger = atom({ plugin: 'mochi-crew', key: 'ledger' } as const, FRESH_LEDGER)
 const NO_MISSIONS: readonly string[] = []
 const missions = atom({ plugin: 'mochi-crew', key: 'missions' } as const, NO_MISSIONS)
+const NO_FOCUS: TreeFocus | null = null
+const treeFocus = atom({ plugin: 'mochi-crew', key: 'treeFocus' } as const, NO_FOCUS)
+const NOTHING_TOUCHED: readonly TouchedFile[] = []
+const treeTouched = atom({ plugin: 'mochi-crew', key: 'treeTouched' } as const, NOTHING_TOUCHED)
+const NO_TREE: TreeSnapshot | null = null
+const tree = atom({ plugin: 'mochi-crew', key: 'tree' } as const, NO_TREE)
+const isTreeOn = atom({ plugin: 'mochi-crew', key: 'isTreeOn' } as const, true)
 // Fixing a failing command is worth more than a routine edit.
 const XP_PER_SQUASH = 15
 
@@ -203,6 +213,7 @@ const loadSaved = async ($: EngineInterface): Promise<void> => {
   const savedSound = await readSaved(STORE.isSoundOn)
   const savedCare = await readSaved(STORE.care)
   const savedAchievements = await readSaved(STORE.achievements)
+  const savedTreeOn = await readSaved(STORE.isTreeOn)
   await update($, stats, (): CrewStats => savedStats)
   // Start the idle clock now, so Mochi does not wake up already asleep.
   const now = await $.clock.now()
@@ -211,11 +222,16 @@ const loadSaved = async ($: EngineInterface): Promise<void> => {
   await update($, achievements, (): readonly string[] => parseUnlocked(savedAchievements))
   await update($, outfit, (): OutfitName => (isOutfitName(savedOutfit) ? savedOutfit : DEFAULT_OUTFIT))
   await update($, isSoundOn, () => savedSound === true)
+  // The file tree is on unless it was switched off.
+  await update($, isTreeOn, () => savedTreeOn !== false)
   // Session-only state starts empty, also when a session restarts in the same process.
   await update($, turn, (): Turn | null => NO_TURN)
   await update($, journal, (): Journal => EMPTY_JOURNAL)
   await update($, ledger, (): TurnLedger => FRESH_LEDGER)
   await update($, missions, (): readonly string[] => NO_MISSIONS)
+  await update($, treeFocus, (): TreeFocus | null => NO_FOCUS)
+  await update($, treeTouched, (): readonly TouchedFile[] => NOTHING_TOUCHED)
+  await update($, tree, (): TreeSnapshot | null => NO_TREE)
 }
 
 /** The status of each agent this session knows, or undefined when the engine could not say. */
@@ -332,7 +348,7 @@ const step = async ($: EngineInterface): Promise<void> => {
   await expireTransients($, now)
   // A call still running keeps the turn alive even after its pose has settled (a 40-minute build).
   await checkTurnAlive($, now, mainCallsRunning > 0 || crew.some(worker => worker.leftAt === undefined))
-  if (tick % HUD_REFRESH_TICKS === 0) $.ui.invalidate('ui.render')
+  if (tick % HUD_REFRESH_TICKS === 0 || (isTreePulsing && tick % TREE_PULSE_TICKS === 0)) $.ui.invalidate('ui.render')
   const cells = cellsFor(await frameInput($, now, settled, crew))
   if (cells === paintedCells) return
   const painted = await $.ui.blit({ requestId: PANE, key: SCENE_KEY, cells, columns: sceneWidth, rows: SCENE_ROWS })
@@ -436,6 +452,7 @@ const trackEdit = async (
   run: () => Promise<ToolCallResult>,
 ): Promise<ToolCallResult> => {
   const isMainLoop = agentId === undefined
+  noteTreeTouch($, file, 'edit', agentId)
   // Awaited on purpose: "editing" must land before "done" (or Mochi would stay mid-edit) and be
   // on screen while the call runs. It is one or two local host calls, not I/O.
   if (isMainLoop) {
@@ -465,6 +482,8 @@ const trackEdit = async (
       $.ui.log(`mochi-crew: could not finish an edit: ${String(error)}`, { to: 'debug' }),
     )
     if (agentId !== undefined) endWorkerCall($, agentId)
+    // A write can add a file and an edit changes git's view of it.
+    queueTreeRefresh($)
   }
 }
 
@@ -507,6 +526,8 @@ type GadgetCall = {
   agentId: string | undefined
   /** Set for shell commands: a failure spawns a bug, a success squashes one. */
   command?: string
+  /** Set for file reads: the main loop's read file is marked live in the file tree. */
+  file?: string
 }
 
 /**
@@ -516,7 +537,7 @@ type GadgetCall = {
  */
 const trackGadget = async (
   $: EngineInterface,
-  { gadget, detail, verb, agentId, command }: GadgetCall,
+  { gadget, detail, verb, agentId, command, file }: GadgetCall,
   run: () => Promise<ToolCallResult>,
 ): Promise<ToolCallResult> => {
   if (agentId !== undefined) {
@@ -535,6 +556,7 @@ const trackGadget = async (
       return ran
     } finally {
       endWorkerCall($, agentId)
+      if (command !== undefined) queueTreeRefresh($)
       if (command !== undefined) {
         void scoreCommand($, command, workerOutcome).catch((error: unknown) =>
           $.ui.log(`mochi-crew: could not score a worker's command: ${String(error)}`, { to: 'debug' }),
@@ -547,6 +569,7 @@ const trackGadget = async (
     kind: 'using', gadget, detail, since, fromX: mascotXAt(current, since, sceneWidth), ...(verb === undefined ? {} : { verb }),
   }))
   markTurnAlive($, since)
+  if (file !== undefined) noteTreeTouch($, file, 'read', undefined)
   mainCallsRunning += 1
   // A denied call never ran, so it neither spawns nor squashes a bug.
   let outcome: CommandOutcome = 'skipped'
@@ -556,6 +579,8 @@ const trackGadget = async (
     return ran
   } finally {
     mainCallsRunning = Math.max(0, mainCallsRunning - 1)
+    // A command may have changed files or what git says of them.
+    if (command !== undefined) queueTreeRefresh($)
     void finishGadget($, since, command === undefined ? 'skipped' : outcome, command ?? '').catch((error: unknown) =>
       $.ui.log(`mochi-crew: could not put a gadget away: ${String(error)}`, { to: 'debug' }),
     )
@@ -671,6 +696,8 @@ const beginTurn = async ($: EngineInterface, turnId: string): Promise<void> => {
   const now = await $.clock.now()
   // A late or replayed start of a turn already seen (even one already handed back) changes nothing.
   await update($, turn, (current): Turn | null => (current?.turnId === turnId ? current : startTurn(turnId, now)))
+  // A new prompt: last turn's live file is no longer live.
+  await update($, treeFocus, (): TreeFocus | null => NO_FOCUS)
   await update($, activity, (current): MascotActivity =>
     current.kind === 'idle' ? { kind: 'idle', since: now, fromX: mascotXAt(current, now, sceneWidth) } : current,
   )
@@ -757,6 +784,15 @@ const runMascotCommand = async ($: EngineInterface, args: string): Promise<strin
       return missionReport(await read($, missions), await read($, journal))
     case 'meter':
       return meterReportText($)
+    case 'files': {
+      const isOn = command.isOn ?? !(await read($, isTreeOn))
+      await update($, isTreeOn, () => isOn)
+      if (isOn) queueTreeRefresh($)
+      $.ui.invalidate('ui.render')
+      return (await persist($, STORE.isTreeOn, isOn))
+        ? `File tree ${isOn ? 'on' : 'off'}.`
+        : `File tree ${isOn ? 'on' : 'off'} (could not save it for next time).`
+    }
     case 'error':
       return command.message
   }
@@ -948,6 +984,134 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
   }
 }
 
+// ── File tree ──────────────────────────────────────────────────────────────────────────
+// The project's folders on the way to the files this session touched, with the live file
+// marked and git's badges. Hooks read disk and git; the pane only draws the last snapshot,
+// since state cannot be written while it draws.
+
+// Ticks between the live row's pulse frames (~0.7 s), redrawn only while it pulses.
+const TREE_PULSE_TICKS = 4
+// Git and the editor launch are local and quick; anything slower is stuck.
+const TREE_RUN_MS = 5_000
+// Set by the pane each time it draws: whether its live row is pulsing now.
+let isTreePulsing = false
+// One read at a time; a request during one runs once more after it, never in parallel.
+let treeReading: Promise<void> | undefined
+let isTreeReadDue = false
+
+/** A git command's output in the project root, or undefined when it fails or there is no repo. */
+const gitOutput = async ($: EngineInterface, root: string, args: readonly string[]): Promise<string | undefined> => {
+  try {
+    const ran = await $.process.run(['git', ...args], { cwd: root, timeoutMs: TREE_RUN_MS })
+    return ran.exitCode === 0 ? ran.stdout : undefined
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: git ${args[0] ?? ''} failed for the file tree: ${String(error)}`, { to: 'debug' })
+    return undefined
+  }
+}
+
+/** A folder's entries, or none when it cannot be listed (gone, unreadable). */
+const listFolder = async ($: EngineInterface, root: string, dir: string): Promise<readonly TreeEntry[]> => {
+  try {
+    return toEntries(await $.fs.list(dir === '' ? root : `${root}/${dir}`))
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: could not list ${dir || '.'} for the file tree: ${String(error)}`, { to: 'debug' })
+    return []
+  }
+}
+
+/** Reads the open folders and git's view of the project into a fresh snapshot. */
+const readTree = async ($: EngineInterface): Promise<void> => {
+  const root = await $.session.root()
+  const focus = await read($, treeFocus)
+  const touched = await read($, treeTouched)
+  const dirs = [...expandedDirs([...touched.map(file => file.path), ...(focus === null ? [] : [focus.path])])]
+  const listed = await Promise.all(dirs.map(async dir => [dir, await listFolder($, root, dir)] as const))
+  // The session root may sit below the repository's top: git's paths are cut to it.
+  const prefix = (await gitOutput($, root, ['rev-parse', '--show-prefix']))?.trim()
+  const isRepo = prefix !== undefined
+  const [status, numstat, branch] = isRepo
+    ? await Promise.all([
+      gitOutput($, root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', '.']),
+      gitOutput($, root, ['diff', '--numstat', '-z', 'HEAD', '--', '.']),
+      gitOutput($, root, ['branch', '--show-current']),
+    ])
+    : [undefined, undefined, undefined]
+  const branchName = branch?.trim()
+  const snapshot: TreeSnapshot = {
+    rootName: fileName(root),
+    listings: Object.fromEntries(listed),
+    marks: status === undefined ? {} : parseGitStatus(status, prefix ?? ''),
+    added: numstat === undefined ? {} : parseNumstat(numstat, prefix ?? ''),
+    ...(branchName === undefined || branchName === '' ? {} : { branch: branchName }),
+  }
+  await update($, tree, (): TreeSnapshot | null => snapshot)
+  $.ui.invalidate('ui.render')
+}
+
+/** Asks for a fresh read while the tree is on; off the caller's path, failures logged. */
+const queueTreeRefresh = ($: EngineInterface): void => {
+  if (treeReading !== undefined) {
+    isTreeReadDue = true
+    return
+  }
+  treeReading = (async () => {
+    do {
+      isTreeReadDue = false
+      if (await read($, isTreeOn)) await readTree($)
+    } while (isTreeReadDue)
+  })()
+    .catch((error: unknown) => $.ui.log(`mochi-crew: could not read the file tree: ${String(error)}`, { to: 'debug' }))
+    .finally(() => {
+      treeReading = undefined
+    })
+}
+
+/**
+ * Notes a file a call is about: an edit is remembered as touched (with its worker for a
+ * subagent), and the main loop's file becomes the live one. A main-loop read is live only,
+ * so reading around never opens folders for good. Off the call's path; failures logged.
+ */
+const noteTreeTouch = ($: EngineInterface, file: string, kind: TreeFocus['kind'], agentId: string | undefined): void => {
+  void (async () => {
+    const path = relativeTo(await $.session.root(), file)
+    if (path === undefined) return
+    const touched = kind === 'edit'
+      ? await update($, treeTouched, current => touch(current, path, agentId))
+      : await read($, treeTouched)
+    if (agentId === undefined) {
+      const since = await $.clock.now()
+      await update($, treeFocus, (): TreeFocus | null => ({ path, kind, since }))
+    }
+    if (isMissingListing(await read($, tree), [...touched.map(entry => entry.path), path])) queueTreeRefresh($)
+    $.ui.invalidate('ui.render')
+  })().catch((error: unknown) => $.ui.log(`mochi-crew: could not note a file for the tree: ${String(error)}`, { to: 'debug' }))
+}
+
+/**
+ * Opens a file of the tree in the person's editor. The path must resolve inside the project;
+ * only windowed editors are run, by argument vector, never through a shell.
+ */
+const openInEditor = async ($: EngineInterface, path: string): Promise<string> => {
+  const root = await $.session.root()
+  const rootReal = (await $.fs.stat(root, { resolve: true })).realPath ?? root
+  const relative = relativeTo(root, path)
+  const target = relative === undefined
+    ? undefined
+    : (await $.fs.stat(`${root}/${relative}`, { resolve: true }).catch(() => undefined))?.realPath
+  if (target === undefined || !isInside(rootReal, target)) return `Could not open ${path}: it is not a file in this project.`
+  const env = { VISUAL: await $.env.get('VISUAL'), EDITOR: await $.env.get('EDITOR') }
+  for (const argv of launchersFor(env, target)) {
+    try {
+      const ran = await $.process.run(argv, { timeoutMs: TREE_RUN_MS })
+      if (ran.exitCode === 0) return `Opened ${relative ?? path}.`
+    } catch (error: unknown) {
+      // Not installed, or not a terminal session: try the next one.
+      $.ui.log(`mochi-crew: ${argv[0] ?? ''} could not open a file: ${String(error)}`, { to: 'debug' })
+    }
+  }
+  return `Could not open ${relative ?? path}: no editor found (set VISUAL to code, cursor or zed).`
+}
 
 export const register: Register = on => {
   on('session.end', async ($, e, next) => {
@@ -978,13 +1142,14 @@ export const register: Register = on => {
     for (const name of MASCOT_COMMANDS) {
       await $.command.register({
         name,
-        description: 'Open the Mochi crew pane, read the session journal or meter, change outfit, toggle sound',
-        argumentHint: '[journal | missions | achievements | meter | outfits | outfit <name> | sound on|off]',
+        description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, change outfit, toggle sound',
+        argumentHint: '[journal | missions | achievements | meter | files [on|off] | outfits | outfit <name> | sound on|off]',
       })
     }
     void $.ui.open({ id: PANE, title: TITLE })
     // The host reads go off the start-up path, so Mochi and /mascot never wait on them.
     void startMeter($).catch((error: unknown) => $.ui.log(`mochi-crew: meter could not start: ${String(error)}`, { to: 'debug' }))
+    queueTreeRefresh($)
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -1011,7 +1176,7 @@ export const register: Register = on => {
   ).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'Read' }, ($, e, next) =>
-    trackGadget($, { gadget: 'magnifier', detail: fileName(e.file_path), agentId: e.agentId }, () => next(e)),
+    trackGadget($, { gadget: 'magnifier', detail: fileName(e.file_path), agentId: e.agentId, file: e.file_path }, () => next(e)),
   ).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'WebSearch' }, ($, e, next) =>
@@ -1060,6 +1225,7 @@ export const register: Register = on => {
     void (agentId === undefined ? endTurn($, e.turnId, outcome, e.durationMs) : releaseWorker($, agentId)).catch((error: unknown) =>
       $.ui.log(`mochi-crew: could not follow a turn's end: ${String(error)}`, { to: 'debug' }),
     )
+    if (agentId === undefined) queueTreeRefresh($)
     void noteMeterTurn($, e).catch((error: unknown) =>
       $.ui.log(`mochi-crew: meter could not count a turn: ${String(error)}`, { to: 'debug' }),
     )
@@ -1095,12 +1261,26 @@ export const register: Register = on => {
     const rule = ruleFor(columns)
     const meterView = await readMeterView($, isThinking(currentTurn))
     const meter = meterRows(meterView, barWidth)
-    const { isCompact } = hudPlan(e.props.scroll.bodyRows, isTerminal ? SCENE_ROWS : 0, {
+    const isTreeShown = await read($, isTreeOn)
+    const hudExtras = {
       hasBubble: bubble !== null,
       hasTurnLine: turnLine !== null,
       workerCount: onStage.length,
       meterRows: meter.length,
-    })
+      hasTreeLine: isTreeShown,
+    }
+    const sceneRows = isTerminal ? SCENE_ROWS : 0
+    const { isCompact } = hudPlan(e.props.scroll.bodyRows, sceneRows, hudExtras)
+    // The file tree gets only the rows the HUD leaves; too few, and it folds into one line.
+    const snapshot = isTreeShown ? await read($, tree) : null
+    const focus = await read($, treeFocus)
+    const touchedFiles = await read($, treeTouched)
+    const treeSpace = snapshot !== null && !isCompact ? treeBudget(e.props.scroll.bodyRows, sceneRows, hudExtras) : 0
+    const allTreeRows = snapshot !== null && treeSpace >= MIN_TREE_ROWS ? treeRows({ snapshot, focus, touched: touchedFiles }) : null
+    const shownTree = allTreeRows === null ? null : windowRows(allTreeRows, anchorOf(allTreeRows, touchedFiles), treeSpace)
+    isTreePulsing = isTerminal && shownTree !== null && isThinking(currentTurn) && shownTree.rows.some(row => row.tone === 'active')
+    const isPulseLit = !isTreePulsing || Math.floor(tick / TREE_PULSE_TICKS) % 2 === 0
+    const foldedTree = isTreeShown && shownTree === null ? treeLine(focus, touchedFiles) ?? 'nothing touched yet' : null
     const crewLine = isCompact ? crewSummary(onStage) : null
     const meterLine = isCompact ? meterSummary(meterView) : null
     const isTrouble = (current.kind === 'done' && current.hasFailed) || isBugAlive(liveBug)
@@ -1121,6 +1301,35 @@ export const register: Register = on => {
         <Text color={THEME.alert}>  {vitalNote(value)}</Text>
       </Text>
     )
+
+    const treeEntry = (row: TreeRow) => {
+      const parts = rowParts(row, columns - 2)
+      const workerColor = row.workerId === undefined ? undefined : hatOf(row.workerId).text
+      const isActive = row.tone === 'active'
+      const glyphColor = isActive ? (isPulseLit ? ACCENT : TRACK) : workerColor
+      const nameColor = isActive ? ACCENT : workerColor
+      const isDim = row.tone === 'dim'
+      const lines = row.added > 0 ? `+${row.added}` : ''
+      const mark = parts.badge.slice(lines.length).trim()
+      const gap = parts.badge === '' ? '' : '  '
+      const pieces = (
+        <Text>
+          <Text dimColor>{parts.indent}</Text>
+          <Text color={glyphColor} dimColor={glyphColor === undefined}>{parts.glyph}</Text>
+          <Text color={nameColor} bold={isActive} dimColor={isDim}>{parts.name}</Text>
+          <Text>{gap}</Text>
+          <Text color={THEME.good}>{lines}</Text>
+          <Text>{lines !== '' && mark !== '' ? ' ' : ''}</Text>
+          <Text color={row.mark === 'D' ? THEME.alert : undefined} dimColor={row.mark !== 'D'}>{mark}</Text>
+        </Text>
+      )
+      if (row.kind !== 'file') return <Text key={`tree:${row.key}`} wrap="truncate-end">{pieces}</Text>
+      return (
+        <Button key={`file:${row.key}`} plain onPress={() => void pressButton($, () => openInEditor($, row.key))}>
+          {pieces}
+        </Button>
+      )
+    }
 
     const hud = (
       <Box flexDirection="column" alignItems="flex-start" paddingX={1}>
@@ -1191,12 +1400,30 @@ export const register: Register = on => {
         {!isCompact && onStage.length > MAX_VISIBLE_WORKERS && (
           <Text dimColor>{gutter('')}+{onStage.length - MAX_VISIBLE_WORKERS} more on the crew</Text>
         )}
+        {foldedTree !== null && (
+          <Text wrap="truncate-end">
+            <Text dimColor>{gutter('files')}</Text>
+            <Text color={focus === null ? undefined : ACCENT}>{foldedTree}</Text>
+          </Text>
+        )}
+        {shownTree !== null && snapshot !== null && <Text dimColor>{rule}</Text>}
+        {shownTree !== null && snapshot !== null && (
+          <Text wrap="truncate-end">
+            <Text dimColor>{gutter('files')}</Text>
+            <Text bold>{snapshot.rootName}</Text>
+            <Text dimColor>{snapshot.branch === undefined ? '' : `  ${snapshot.branch}`}</Text>
+          </Text>
+        )}
+        {shownTree !== null && shownTree.above > 0 && <Text dimColor>  ↑ {shownTree.above} more</Text>}
+        {shownTree?.rows.map(treeEntry)}
+        {shownTree !== null && shownTree.below > 0 && <Text dimColor>  ↓ {shownTree.below} more</Text>}
         <Box flexDirection="row" gap={2}>
           <Button key="pet" hotkey="p" plain label="pet" onPress={() => void pressButton($, () => react($, 'pet'))} />
           <Button key="feed" hotkey="f" plain label="feed" onPress={() => void pressButton($, () => react($, 'feed'))} />
           <Button key="dance" hotkey="d" plain label="dance" onPress={() => void pressButton($, () => react($, 'dance'))} />
           <Button key="outfit" hotkey="o" plain label="outfit" onPress={() => void pressButton($, () => cycleOutfit($))} />
           <Button key="sound" hotkey="s" plain label={soundOn ? 'mute' : 'sound'} onPress={() => void pressButton($, () => toggleSound($))} />
+          <Button key="files" hotkey="t" plain label={isTreeShown ? 'hide files' : 'files'} onPress={() => void pressButton($, () => runMascotCommand($, 'files'))} />
         </Box>
       </Box>
     )

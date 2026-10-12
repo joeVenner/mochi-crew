@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { TreeEntry, TreeSnapshot } from '../types'
 import {
   MAX_TOUCHED, anchorOf, ancestorsOf, badgeOf, expandedDirs, isInside, isMissingListing, parseGitStatus,
-  parseNumstat, relativeTo, toEntries, touch, treeLine, treeRows, windowRows,
+  parseNumstat, relativeTo, rowParts, toEntries, touch, treeLine, treeRows, windowRows,
 } from '../hooks/fileTree'
 import type { TreeRow } from '../hooks/fileTree'
 
@@ -187,5 +187,28 @@ describe('touches and the folded line', () => {
     expect(treeLine({ path: 'a/b.ts', kind: 'read', since: 0 }, [])).toBe('reading a/b.ts')
     expect(treeLine(null, [{ path: 'c.ts' }])).toBe('last c.ts')
     expect(treeLine(null, [])).toBe(null)
+  })
+})
+
+describe('row layout', () => {
+  const row = (over: Partial<TreeRow>): TreeRow => ({
+    key: 'a', kind: 'file', depth: 0, name: 'a', isOpen: false, tone: 'plain', changes: 0, added: 0, ...over,
+  })
+
+  test('glyphs mark folders, the live file and touched files', async () => {
+    expect(rowParts(row({ kind: 'dir', isOpen: true }), 40).glyph).toBe('▾ ')
+    expect(rowParts(row({ kind: 'dir' }), 40).glyph).toBe('▸ ')
+    expect(rowParts(row({ tone: 'active' }), 40).glyph).toBe('● ')
+    expect(rowParts(row({ tone: 'worker', workerId: 'w' }), 40).glyph).toBe('● ')
+    expect(rowParts(row({ tone: 'touched' }), 40).glyph).toBe('· ')
+    expect(rowParts(row({ depth: 2 }), 40).indent).toBe('    ')
+  })
+
+  test('a long name is cut so the badge still fits', async () => {
+    const parts = rowParts(row({ name: 'check-referential-integrity.ps1', mark: 'M', added: 3, changes: 1, depth: 1 }), 24)
+    expect(parts.badge).toBe('+3 M')
+    expect(parts.name.endsWith('…')).toBe(true)
+    const width = parts.indent.length + parts.glyph.length + parts.name.length + 2 + parts.badge.length
+    expect(width).toBe(24)
   })
 })

@@ -293,3 +293,19 @@ export const touch = (touched: readonly TouchedFile[], path: string, workerId: s
 /** Whether the snapshot lacks a listing the tree would open now, so a read is due. */
 export const isMissingListing = (snapshot: TreeSnapshot | null, paths: readonly string[]): boolean =>
   snapshot === null || [...expandedDirs(paths)].some(dir => snapshot.listings[dir] === undefined)
+
+/** The pieces of one drawn row, the name cut so the row fits `columns` cells. */
+export type RowParts = { readonly indent: string; readonly glyph: string; readonly name: string; readonly badge: string }
+
+/** Lays out a row: two cells of indent per level, a glyph, the name, then its badge after a gap. */
+export const rowParts = (row: TreeRow, columns: number): RowParts => {
+  const indent = '  '.repeat(row.depth)
+  const glyph = row.kind === 'dir' ? (row.isOpen ? '▾ ' : '▸ ')
+    : row.tone === 'active' || row.tone === 'worker' ? '● '
+    : row.tone === 'touched' ? '· '
+    : '  '
+  const badge = badgeOf(row)
+  const room = Math.max(4, columns - indent.length - glyph.length - (badge === '' ? 0 : badge.length + 2))
+  const name = row.name.length <= room ? row.name : `${row.name.slice(0, room - 1)}…`
+  return { indent, glyph, name, badge }
+}
