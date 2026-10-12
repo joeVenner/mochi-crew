@@ -11,9 +11,10 @@
 Mochi types when Claude edits, grabs a hammer when a command runs, thinks along while Claude works,
 and waves when it's your turn. Subagents join as a crew of kittens in role costumes. Fixed bugs,
 green tests and shipped turns earn XP, missions and badges. A session meter under the HUD shows
-your model, context fill, prompt-cache hit rate, and plan limits or cost.
+your model, context fill, prompt-cache hit rate, and plan limits or cost, and a file tree shows
+where in the project Claude is working.
 
-[Install](#install) · [What it does](#what-it-does) · [The crew](#the-crew) · [Session meter](#session-meter) · [Controls](#controls) · [Privacy](#privacy-and-safety) · [Development](#development)
+[Install](#install) · [What it does](#what-it-does) · [The crew](#the-crew) · [Session meter](#session-meter) · [File tree](#file-tree) · [Controls](#controls) · [Privacy](#privacy-and-safety) · [Development](#development)
 
 </div>
 
@@ -185,6 +186,41 @@ Sources, as of October 2026: Claude Code's docs on
 and [its quotas](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-quotas-limits);
 AWS on [Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
 
+## File tree
+
+The bottom of the HUD shows the project as a tree, focused on this session's work: only the
+folders that lead to files Claude edited are open, and the rest stay closed.
+
+```
+──────────────────────────────────────────
+files   mochi-crew  feat/file-tree
+▸ docs
+▾ plugins
+  ▾ mochi-crew
+    ▾ hooks
+        editor.ts                 ?
+      ● fileTree.ts          +12 M
+      · register.tsx         +40 M
+p: pet  f: feed  d: dance  o: outfit  s: sound  t: files
+```
+
+- `●` in the accent color is the file Claude is editing or reading now. It pulses while the turn
+  runs.
+- `·` marks files edited earlier in the session. A file a subagent edited is drawn in its kitten's
+  hard-hat color.
+- Badges come from git: `M` modified, `A` added, `D` deleted, `R` renamed, `?` untracked, and
+  `+N` lines added since the last commit (untracked files have no count). A folder shows its
+  totals, such as `+52 M:2`.
+- **Click a file to open it in your editor.** `$VISUAL` or `$EDITOR` is used when it names a
+  windowed editor (VS Code, Cursor, Windsurf, Zed, Sublime, JetBrains). Otherwise the file opens
+  with `code`, then in macOS's default text editor. A file is never handed to the system opener,
+  which could run it (a `.command` file, say). Terminal editors such as vim are never started,
+  since the pane has no terminal to give them.
+
+The tree takes only the rows the rest of the HUD leaves. In a short pane it folds into one line,
+such as `files   editing hooks/fileTree.ts`. Turn it off with `t`, the `files` button, or
+`/mascot files off`.
+
 ## Controls
 
 Focus the pane (`ctrl+x tab`, or click it) and press:
@@ -196,6 +232,7 @@ Focus the pane (`ctrl+x tab`, or click it) and press:
 | `d` | dance |
 | `o` | next outfit |
 | `s` | sound on or off |
+| `t` | file tree on or off |
 
 Commands:
 
@@ -206,6 +243,7 @@ Commands:
 /mascot missions               this session's goals and progress
 /mascot achievements           badges earned and how to earn the rest
 /mascot meter                  the session meter in full, with notes for your provider
+/mascot files [on|off]         show or hide the file tree (on by default)
 /mascot outfits                list outfits
 /mascot outfit <name>          classic, wizard, pirate, party, shades, crown
 /mascot sound on|off           8-bit sound effects (off by default)
@@ -219,13 +257,20 @@ Commands:
   meter reads figures Claude Code already has, plus the provider-selection and cache-TTL environment
   variables by name. It asks only whether the session uses a key or a sign-in, never for the
   credential itself.
+- **Local commands, no shell.** The file tree lists folders on the way to edited files and runs
+  `git status`, `git diff --numstat` and `git branch` in the project, without taking git's index
+  lock and with the repository's fsmonitor command turned off. File names are drawn with
+  control characters masked. Clicking a file runs your
+  editor with that file's path. Commands run by argument list, never through a shell, and only
+  for files that resolve inside the project.
 - **Secrets are masked on screen.** Commands shown in the HUD have tokens, auth headers, URL
   credentials and secret-looking env vars or flags replaced with `••••`. This affects the display
   only; your commands run unchanged.
 - **Never in the way.** Every hook passes the tool call through untouched, even if Mochi's own
   bookkeeping fails, and all scoring happens after the result is already on its way back.
-- **What is saved.** Level, XP, outfit, sound setting, mood, energy and badges persist in Claude
-  Code's per-plugin store. The session journal, missions and meter reset every session.
+- **What is saved.** Level, XP, outfit, sound setting, the file tree switch, mood, energy and
+  badges persist in Claude Code's per-plugin store. The session journal, missions, meter and the
+  tree's touched files reset every session.
 
 ## Development
 
@@ -255,7 +300,7 @@ state and the pane.
 
 | File | Responsibility |
 |---|---|
-| `register.tsx` | hooks, state, animation ticker, pane and HUD, session meter wiring |
+| `register.tsx` | hooks, state, animation ticker, pane and HUD, session meter and file tree wiring |
 | `canvas.ts` · `world.ts` · `sprite.ts` · `workerArt.ts` | pixel canvas, the room, Mochi, the kittens |
 | `behavior.ts` | walking, idle routines, sleep |
 | `crew.ts` · `roles.ts` | subagent workers and their costumes |
@@ -263,6 +308,7 @@ state and the pane.
 | `journal.ts` · `missions.ts` · `achievements.ts` | session journal, missions, badges |
 | `care.ts` · `events.ts` | mood and reactions, bugs and quips |
 | `hud.ts` · `mascot.ts` · `redact.ts` | HUD layout, labels, secret masking |
+| `fileTree.ts` · `editor.ts` | file tree: git parsing, the focused tree and its window; the editor launcher |
 | `meter.ts` · `meterRows.ts` · `meterAlerts.ts` · `meterReport.ts` | session meter: provider detection and figures, HUD rows, alerts, `/mascot meter` |
 
 ## License

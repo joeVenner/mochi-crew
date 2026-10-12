@@ -11,7 +11,7 @@
     {
       "name": "mochi-crew",
       "source": "./plugins/mochi-crew",
-      "description": "Mod: a pixel cat in a side pane that reacts to your real session, with a crew of kitten subagents, XP, missions, a session journal and a session meter (model, context, prompt cache, limits or cost).",
+      "description": "Mod: a pixel cat in a side pane that reacts to your real session, with a crew of kitten subagents, XP, missions, a session journal, a session meter (model, context, prompt cache, limits or cost) and a live file tree.",
       "category": "mod"
     }
   ]
