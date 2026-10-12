@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-12
+
+### Added
+
+- File tree at the bottom of Mochi's HUD, focused on the session: only the folders that lead to
+  edited files are open. The file Claude is editing or reading is marked and pulses while the turn
+  runs. Files a subagent edited take its kitten's hat color.
+- Git badges in the tree: modified, added, deleted, renamed and untracked files, plus lines added.
+  Folders show their totals.
+- Click a file in the tree to open it in your editor: a windowed `$VISUAL`/`$EDITOR`, else VS Code,
+  else macOS's default text editor. Files are never launched by their type.
+- `/mascot files [on|off]`, the `t` key and a `files` button toggle the tree; the choice is saved.
+  A short pane folds it into one line naming the file in hand.
+
+### Changed
+
+- The HUD keeps one row for the file tree's line, so a pane folds to its compact layout one row
+  sooner.
+
 ## [1.1.0] - 2026-10-12
 
 ### Added

@@ -25,6 +25,13 @@ describe('/mascot arguments', () => {
     expect(parseMascotCommand('sound off')).toEqual({ kind: 'sound', isOn: false })
   })
 
+  test('files flips the file tree, or sets it with on/off', async () => {
+    expect(parseMascotCommand('files')).toEqual({ kind: 'files' })
+    expect(parseMascotCommand('files on')).toEqual({ kind: 'files', isOn: true })
+    expect(parseMascotCommand('FILES off')).toEqual({ kind: 'files', isOn: false })
+    expect(parseMascotCommand('files maybe').kind).toBe('error')
+  })
+
   test('unknown requests answer with help, never throw', async () => {
     expect(parseMascotCommand('outfit tuxedo')).toEqual({
       kind: 'error',

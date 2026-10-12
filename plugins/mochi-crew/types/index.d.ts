@@ -142,6 +142,32 @@ export type Measure = {
   readonly costUsd?: number
 }
 
+/** A file's git state as the file tree badges it: modified, added, deleted, renamed, untracked. */
+export type GitMark = 'M' | 'A' | 'D' | 'R' | '?'
+
+/** The file Claude's main loop is editing or reading right now; `path` is relative to the project root. */
+export type TreeFocus = { readonly path: string; readonly kind: 'edit' | 'read'; readonly since: number }
+
+/** A file touched this session, relative to the project root; `workerId` when a subagent touched it last. */
+export type TouchedFile = { readonly path: string; readonly workerId?: string }
+
+/** One directory entry as the file tree keeps it. */
+export type TreeEntry = { readonly name: string; readonly isDir: boolean }
+
+/** What the file tree last read from disk and git; the rows are drawn from it at render time. */
+export type TreeSnapshot = {
+  /** The project root's folder name. */
+  readonly rootName: string
+  /** Listings by directory relative to the root (`''` is the root), sorted, only for expanded ones. */
+  readonly listings: Readonly<Record<string, readonly TreeEntry[]>>
+  /** Git state per changed file, relative to the root. */
+  readonly marks: Readonly<Record<string, GitMark>>
+  /** Lines added per changed file, relative to the root. */
+  readonly added: Readonly<Record<string, number>>
+  /** The checked-out branch, absent outside a repository or on a detached head. */
+  readonly branch?: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'mochi-crew': {
@@ -170,6 +196,14 @@ declare module 'claude-code' {
       meterLastResponseAt: number | null
       /** Session meter: alert keys already raised (e.g. `context:90`), once per crossing. */
       meterAlerts: readonly string[]
+      /** File tree: the file the main loop works on now, null between calls. */
+      treeFocus: TreeFocus | null
+      /** File tree: files touched this session, oldest first. */
+      treeTouched: readonly TouchedFile[]
+      /** File tree: the last read of disk and git, null before one. */
+      tree: TreeSnapshot | null
+      /** File tree: whether the section shows under the HUD (saved across sessions). */
+      isTreeOn: boolean
     }
   }
 }
