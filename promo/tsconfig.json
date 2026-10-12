@@ -8,7 +8,18 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "lib": ["ES2022", "DOM"]
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "allowImportingTsExtensions": true,
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src", "remotion.config.ts"]
+  "include": [
+    "src",
+    "scripts",
+    "remotion.config.ts"
+  ]
 }
