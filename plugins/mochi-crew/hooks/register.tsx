@@ -35,6 +35,8 @@ import type { Tone as MeterTone } from './meterRows'
 import { meterRows, meterSummary } from './meterRows'
 
 const PANE = 'mochi-crew'
+/** The slash commands that open and drive the pane; `/mochi` is an alias of `/mascot`. */
+const MASCOT_COMMANDS = ['mascot', 'mochi'] as const
 const TITLE = 'Mochi'
 const SCENE_KEY = 'scene'
 /** The HUD's one accent, the host theme's own Claude orange (follows light/dark themes). */
@@ -972,11 +974,14 @@ export const register: Register = on => {
     await resetConversation($).catch((error: unknown) =>
       $.ui.log(`mochi-crew: meter could not reset: ${String(error)}`, { to: 'debug' }),
     )
-    await $.command.register({
-      name: 'mascot',
-      description: 'Open the Mochi crew pane, read the session journal or meter, change outfit, toggle sound',
-      argumentHint: '[journal | missions | achievements | meter | outfits | outfit <name> | sound on|off]',
-    })
+    // `/mochi` is the same command under the cat's own name.
+    for (const name of MASCOT_COMMANDS) {
+      await $.command.register({
+        name,
+        description: 'Open the Mochi crew pane, read the session journal or meter, change outfit, toggle sound',
+        argumentHint: '[journal | missions | achievements | meter | outfits | outfit <name> | sound on|off]',
+      })
+    }
     void $.ui.open({ id: PANE, title: TITLE })
     // The host reads go off the start-up path, so Mochi and /mascot never wait on them.
     void startMeter($).catch((error: unknown) => $.ui.log(`mochi-crew: meter could not start: ${String(error)}`, { to: 'debug' }))
@@ -985,6 +990,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'mascot' }, async ($, e) => ({ text: await runMascotCommand($, e.args) }))
+  on('command.run', { command: 'mochi' }, async ($, e) => ({ text: await runMascotCommand($, e.args) }))
 
   // The cat is decoration: if its bookkeeping throws, the edit still runs.
   on('tool.call', { tool: 'Edit' }, ($, e, next) =>

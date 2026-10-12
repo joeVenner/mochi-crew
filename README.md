@@ -200,7 +200,7 @@ Focus the pane (`ctrl+x tab`, or click it) and press:
 Commands:
 
 ```
-/mascot                        open the pane
+/mascot                        open the pane (/mochi works too, for every command below)
 /mascot pet | feed | dance     interact without focusing the pane
 /mascot journal                this session: turns and time, edits, commands, fixes, files
 /mascot missions               this session's goals and progress

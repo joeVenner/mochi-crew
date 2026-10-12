@@ -71,6 +71,7 @@ describe('session meter in the pane', () => {
     const commands = engine(on)
     await start($)
     expect(commands).toContain('mascot')
+    expect(commands).toContain('mochi')
     await $.session.measure(measureEvent())
     const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...PANE, props: paneProps() })
     await shows(ui, 'opus 5.5')
@@ -166,6 +167,18 @@ describe('session meter in the pane', () => {
     expect(text).toContain('Session meter')
     expect(text).toContain('Microsoft Foundry (Azure)')
     expect(text).toContain('90% of input read from cache over 1 turn')
+  })
+
+  test('/mochi answers exactly like /mascot', async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    await start($)
+    await $.session.measure(measureEvent())
+    const viaMochi = (await $.command.run({ ...mascot('meter'), command: 'mochi' })).text ?? ''
+    const viaMascot = (await $.command.run(mascot('meter'))).text ?? ''
+    expect(viaMochi).toContain('Session meter')
+    expect(viaMochi).toBe(viaMascot)
+    expect((await $.command.run({ ...mascot('bogus'), command: 'mochi' })).text).toContain('usage:')
   })
 
   test('context crossing 80% toasts once', async ($, on) => {

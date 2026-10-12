@@ -19,6 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   caching that is never reported.
 - `/mascot meter`: the full report with provider notes, including a Foundry 200K-window check.
 - A short pane folds the meter into one summary line, so the controls stay in view.
+- `/mochi`, an alias of `/mascot` for every subcommand.
 
 ## [1.0.0] - 2026-10-11
 
