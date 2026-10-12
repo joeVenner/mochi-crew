@@ -25,6 +25,8 @@ const activityAt = (now: number): MascotActivity => {
   return { kind: 'idle', since: 0, fromX: HOME_X }
 }
 
+// The turn stays `working` to the end on purpose: the done pose outranks the hand-off wave, and
+// the scene cuts before Mochi would settle back to idle.
 const turnAt = (now: number): Turn | null =>
   now < ms(AT.turn) ? null : { phase: 'working', turnId: 'promo', since: ms(AT.turn) }
 
@@ -78,7 +80,7 @@ export const Session = () => {
           </div>
         </Panel>
       </div>
-      <Sequence from={seconds(AT.passed)} durationInFrames={seconds(1.5)}>
+      <Sequence from={seconds(AT.passed)} durationInFrames={seconds(0.5)}>
         <Html5Audio src={doneSound} volume={0.6} />
       </Sequence>
     </Backdrop>

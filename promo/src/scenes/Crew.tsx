@@ -43,7 +43,7 @@ export const Crew = () => {
         </Panel>
       </div>
       {CREW.map(worker => (
-        <Sequence key={worker.id} from={Math.round((worker.joinedAt / 1000) * fps)} durationInFrames={seconds(1)}>
+        <Sequence key={worker.id} from={Math.round((worker.joinedAt / 1000) * fps)} durationInFrames={seconds(0.5)}>
           <Html5Audio src={joinSound} volume={0.5} />
         </Sequence>
       ))}

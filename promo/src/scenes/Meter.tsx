@@ -37,7 +37,8 @@ export const Meter = () => {
   const { fps } = useVideoConfig()
   const now = (frame / fps) * 1000
   const fill = interpolate(frame, [seconds(0.5), seconds(3.2)], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic) })
-  // Idle counts up once the meter has filled, as it does between your prompts.
+  // Idle counts up once the meter has filled, as it does between your prompts, 40x faster so
+  // the minutes visibly tick over in a few seconds of video.
   const idleMs = Math.max(0, now - 3_000) * 40
   const rows = meterRows(viewAt(fill, idleMs), BAR_WIDTH)
   const providerIndex = Math.min(PROVIDERS.length - 1, Math.max(0, Math.floor((frame - seconds(2.4)) / seconds(0.45))))
