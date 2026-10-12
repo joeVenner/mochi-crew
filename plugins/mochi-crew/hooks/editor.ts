@@ -20,8 +20,12 @@ const GUI_EDITORS: Readonly<Record<string, readonly string[]>> = {
   pycharm: [],
 }
 
-/** The fallbacks, in order: VS Code's CLI, then the desktop's own opener (macOS, then Linux). */
-const FALLBACKS: readonly (readonly string[])[] = [['code', '-g'], ['open'], ['xdg-open']]
+/**
+ * The fallbacks, in order: VS Code's CLI, then macOS's default text editor. Never a bare `open`
+ * or `xdg-open`: they launch whatever the file's type is tied to, so a click on a `.command`
+ * file in a cloned repo would run it.
+ */
+const FALLBACKS: readonly (readonly string[])[] = [['code', '-g'], ['open', '-t']]
 
 /** The program an editor variable names, by its file name without a Windows extension. */
 const programOf = (value: string): string | undefined => {
@@ -33,16 +37,19 @@ const programOf = (value: string): string | undefined => {
 /**
  * The commands to try, in order, to open `path` (absolute, so it can never read as a flag):
  * $VISUAL, then $EDITOR, each only when it is a known windowed editor and without the flags it
- * was set with (a `--wait` would hold the run open), then the fallbacks. Never a shell.
+ * was set with (a `--wait` would hold the run open), then the fallbacks. Never a shell. An
+ * empty list never happens: the fallbacks are always there.
  */
 export const launchersFor = (env: EditorEnv, path: string): readonly (readonly string[])[] => {
   const chosen: (readonly string[])[] = []
   for (const value of [env.VISUAL, env.EDITOR]) {
     if (value === undefined) continue
     const program = programOf(value)
-    const flags = program === undefined ? undefined : GUI_EDITORS[program]
+    const flags = program !== undefined && Object.hasOwn(GUI_EDITORS, program) ? GUI_EDITORS[program] : undefined
     const executable = value.trim().split(/\s+/)[0]
-    if (flags === undefined || executable === undefined) continue
+    // A bare name (found on PATH) or an absolute path; a relative one could pick up a project file.
+    const isPlaced = executable !== undefined && (executable.startsWith('/') || !executable.includes('/'))
+    if (flags === undefined || executable === undefined || !isPlaced) continue
     chosen.push([executable, ...flags])
   }
   const seen = new Set<string>()
