@@ -4,14 +4,18 @@ import doneSound from '../../../plugins/mochi-crew/sounds/done.wav'
 import { PixelScene } from '../PixelScene'
 import type { MascotActivity, Turn } from '../plugin'
 import { HOME_X, activityLabel, deskX } from '../plugin'
-import { COLORS, seconds } from '../theme'
+import { COLORS, EFFECT_VOLUME, seconds } from '../theme'
 import { Backdrop, Caption, LINE_SIZE, Panel, StatusLine, typed } from '../ui'
 
 const SCENE_WIDTH = 56
 const PROMPT = 'fix the flaky checkout test'
 
-/** When each beat of the turn lands, in seconds from the scene's start. */
-const AT = { turn: 1.3, read: 2.0, edit: 3.1, test: 5.0, passed: 6.3, answer: 7.0 } as const
+/**
+ * When each beat of the turn lands, in seconds from the scene's start: on the words that name
+ * it in the voice line ("Claude reads", "Claude edits", "Tests pass", "Confetti"), measured
+ * from the line's word timestamps plus its 0.3 s lead.
+ */
+const AT = { turn: 1.3, read: 4.0, edit: 7.6, test: 10.2, passed: 11.3, answer: 11.9 } as const
 
 const ms = (secondsIn: number): number => secondsIn * 1000
 
@@ -81,7 +85,7 @@ export const Session = () => {
         </Panel>
       </div>
       <Sequence from={seconds(AT.passed)} durationInFrames={seconds(0.5)}>
-        <Html5Audio src={doneSound} volume={0.6} />
+        <Html5Audio src={doneSound} volume={EFFECT_VOLUME} />
       </Sequence>
     </Backdrop>
   )

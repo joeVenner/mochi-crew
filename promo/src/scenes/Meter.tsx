@@ -8,6 +8,8 @@ import { Backdrop, Caption, HudLine, Panel, Rule, StatusLine } from '../ui'
 
 const SCENE_WIDTH = 56
 const BAR_WIDTH = 20
+// The provider list appears as the voice line reaches "On any provider".
+const PROVIDERS_FROM = seconds(5.2)
 const PROVIDERS = ['Claude plan', 'API key', 'Bedrock', 'Vertex AI', 'Microsoft Foundry', 'gateways']
 
 /** The meter as a long session leaves it: everything grows from zero to these as the scene plays. */
@@ -41,7 +43,7 @@ export const Meter = () => {
   // the minutes visibly tick over in a few seconds of video.
   const idleMs = Math.max(0, now - 3_000) * 40
   const rows = meterRows(viewAt(fill, idleMs), BAR_WIDTH)
-  const providerIndex = Math.min(PROVIDERS.length - 1, Math.max(0, Math.floor((frame - seconds(2.4)) / seconds(0.45))))
+  const providerIndex = Math.min(PROVIDERS.length - 1, Math.max(0, Math.floor((frame - PROVIDERS_FROM) / seconds(0.45))))
   return (
     <Backdrop>
       <Caption title="A session meter, built in" subtitle="model, context, prompt cache, and plan limits or cost" />
@@ -62,7 +64,7 @@ export const Meter = () => {
         <div style={{ width: 480 }}>
           <div style={{ fontSize: 30, color: COLORS.dim, marginBottom: 24 }}>knows where it runs</div>
           {PROVIDERS.map((name, index) => {
-            const opacity = interpolate(frame - seconds(2.4) - index * seconds(0.45), [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
+            const opacity = interpolate(frame - PROVIDERS_FROM - index * seconds(0.45), [0, 8], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
             return (
               <div key={name} style={{ fontSize: 38, lineHeight: 1.6, opacity, color: index === providerIndex ? COLORS.fur : COLORS.text }}>
                 <span style={{ color: COLORS.accent }}>{'▍ '}</span>{name}

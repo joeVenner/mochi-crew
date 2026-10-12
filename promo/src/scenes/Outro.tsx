@@ -4,7 +4,7 @@ import levelUpSound from '../../../plugins/mochi-crew/sounds/levelup.wav'
 import { PixelScene } from '../PixelScene'
 import type { Reaction } from '../plugin'
 import { HOME_X, activeReaction } from '../plugin'
-import { COLORS, PIXEL, seconds } from '../theme'
+import { COLORS, EFFECT_VOLUME, PIXEL, seconds } from '../theme'
 import { Backdrop, LINE_SIZE, Panel, typed } from '../ui'
 
 const SCENE_WIDTH = 56
@@ -26,7 +26,7 @@ export const Outro = () => {
   const secondLineStart = seconds(0.6) + Math.ceil(INSTALL[0].length / 1.6)
   return (
     <Backdrop>
-      <Html5Audio src={levelUpSound} volume={0.6} />
+      <Html5Audio src={levelUpSound} volume={EFFECT_VOLUME} />
       <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 80 }}>
         <div style={{ transform: `scale(${pop})`, borderRadius: 18, overflow: 'hidden', border: `3px solid ${COLORS.border}` }}>
           <PixelScene
@@ -46,6 +46,7 @@ export const Outro = () => {
             </div>
           </Panel>
           <div style={{ marginTop: 40, fontSize: 34, color: COLORS.text, opacity: linkOpacity }}>github.com/joeVenner/mochi-crew</div>
+          <div style={{ marginTop: 18, fontSize: 22, color: COLORS.dim, opacity: linkOpacity }}>voice: AI-generated</div>
         </div>
       </div>
     </Backdrop>

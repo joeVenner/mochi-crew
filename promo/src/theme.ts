@@ -7,6 +7,12 @@ export const FPS = 30
 export const WIDTH = 1920
 export const HEIGHT = 1080
 
+/** When each scene's voice line starts, in seconds from the scene's start. */
+export const VOICE_LEAD_SECONDS = 0.3
+
+/** Sound effects sit under the narration. */
+export const EFFECT_VOLUME = 0.35
+
 /** Frames for a span in seconds, so scene timings read in seconds. */
 export const seconds = (value: number): number => Math.round(value * FPS)
 

@@ -4,7 +4,7 @@ import joinSound from '../../../plugins/mochi-crew/sounds/join.wav'
 import { PixelScene } from '../PixelScene'
 import type { Turn, Worker } from '../plugin'
 import { HOME_X } from '../plugin'
-import { seconds } from '../theme'
+import { EFFECT_VOLUME, seconds } from '../theme'
 import { Backdrop, Caption, Panel, Rule, StatusLine, WorkerLine } from '../ui'
 
 const SCENE_WIDTH = 64
@@ -44,7 +44,7 @@ export const Crew = () => {
       </div>
       {CREW.map(worker => (
         <Sequence key={worker.id} from={Math.round((worker.joinedAt / 1000) * fps)} durationInFrames={seconds(0.5)}>
-          <Html5Audio src={joinSound} volume={0.5} />
+          <Html5Audio src={joinSound} volume={EFFECT_VOLUME} />
         </Sequence>
       ))}
     </Backdrop>
