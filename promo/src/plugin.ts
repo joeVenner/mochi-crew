@@ -16,3 +16,6 @@ export { activityLabel, workerNote } from '../../plugins/mochi-crew/hooks/mascot
 export { HOME_X, deskX } from '../../plugins/mochi-crew/hooks/behavior'
 export type { Reaction, Turn } from '../../plugins/mochi-crew/types'
 export { activeReaction } from '../../plugins/mochi-crew/hooks/care'
+export { anchorOf, rowParts, treeRows, windowRows } from '../../plugins/mochi-crew/hooks/fileTree'
+export type { TreeRow } from '../../plugins/mochi-crew/hooks/fileTree'
+export type { TouchedFile, TreeFocus, TreeSnapshot } from '../../plugins/mochi-crew/types'

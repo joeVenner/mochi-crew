@@ -6,7 +6,7 @@ import { ROLE_INFO, gutter, hatOf, roleFor, workerNote } from './plugin'
 import { COLORS, MONO, PIXEL, TONE_COLORS } from './theme'
 
 /** The terminal's named colors a hat uses, as the pane's own palette draws them. */
-const HAT_COLORS: Readonly<Record<string, string>> = { yellow: '#ffd54f', cyan: '#4dd0e1', magenta: '#f06292', green: '#66bb6a' }
+export const HAT_COLORS: Readonly<Record<string, string>> = { yellow: '#ffd54f', cyan: '#4dd0e1', magenta: '#f06292', green: '#66bb6a' }
 
 /** Text size of every pane and terminal line. */
 export const LINE_SIZE = 26

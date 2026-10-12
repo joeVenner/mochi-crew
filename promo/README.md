@@ -1,7 +1,7 @@
 # Mochi Crew promo
 
-The promo video, made with [Remotion](https://www.remotion.dev). It draws Mochi, the crew and the
-session meter with the plugin's own code (`sceneFor`, `meterRows`, the HUD helpers), imported
+The promo video, made with [Remotion](https://www.remotion.dev). It draws Mochi, the crew, the
+session meter and the file tree with the plugin's own code (`sceneFor`, `meterRows`, `treeRows`, the HUD helpers), imported
 through `src/plugin.ts`, so the video always shows what the plugin really draws.
 
 This folder is not part of the plugin: the marketplace installs `plugins/mochi-crew` only.
@@ -11,7 +11,7 @@ cd promo
 npm ci
 npm run studio      # preview and scrub in the browser
 npm run voice       # regenerate changed voice lines (needs OPENAI_API_KEY)
-npm run render      # out/mochi-promo.mp4, 1920×1080, about 43 s
+npm run render      # out/mochi-promo.mp4, 1920×1080, about 51 s
 npm run typecheck
 ```
 
@@ -40,6 +40,7 @@ OPENAI_API_KEY="$(security find-generic-password -s com.aiagent.apikey.openai -a
 | Session | 8.5 s | a real turn: read, edit, test, pass; Mochi acts each step out |
 | Crew | 5 s | three subagents walk in as kittens with their HUD rows |
 | Meter | 6 s | the session meter fills; the providers it understands |
+| Files | 8 s | the file tree opens where Claude works, badges land, a click opens the file in an editor |
 | Outro | 5 s | the install commands from the README and the repository link |
 
 Sounds are the plugin's own (`plugins/mochi-crew/sounds`).

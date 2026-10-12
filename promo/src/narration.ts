@@ -4,13 +4,14 @@
  * Change a line here, run `npm run voice` again, and only that line is regenerated.
  */
 
-export type SceneId = 'intro' | 'session' | 'crew' | 'meter' | 'outro'
+export type SceneId = 'intro' | 'session' | 'crew' | 'meter' | 'files' | 'outro'
 
 export const NARRATION: Readonly<Record<SceneId, string>> = {
   intro: 'Meet Mochi. A pixel cat that lives right in your Claude Code side pane.',
   session: 'Every move comes from your real session. Claude reads, Mochi grabs the magnifier. Claude edits, Mochi types. Tests pass? Confetti.',
   crew: 'Start a subagent, and a kitten walks in, dressed for the job.',
   meter: 'And a built-in meter keeps an eye on your model, context, cache, and plan limits. On any provider.',
+  files: 'Plus, a live file tree shows exactly where Claude is working. Click a file, and it opens in your editor.',
   outro: 'Mochi Crew. Free, open source, and one command away.',
 }
 

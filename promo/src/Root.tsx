@@ -5,6 +5,7 @@ import { getAudioDurationInSeconds } from '@remotion/media-utils'
 import type { SceneId } from './narration'
 import { voiceFile } from './narration'
 import { Crew } from './scenes/Crew'
+import { Files } from './scenes/Files'
 import { Intro } from './scenes/Intro'
 import { Meter } from './scenes/Meter'
 import { Outro } from './scenes/Outro'
@@ -21,6 +22,7 @@ const SCENES = [
   { id: 'session', minimum: 8.5, Scene: Session },
   { id: 'crew', minimum: 5, Scene: Crew },
   { id: 'meter', minimum: 6, Scene: Meter },
+  { id: 'files', minimum: 8, Scene: Files },
   { id: 'outro', minimum: 5, Scene: Outro },
 ] as const satisfies ReadonlyArray<{ readonly id: SceneId; readonly minimum: number; readonly Scene: () => JSX.Element }>
 
