@@ -210,7 +210,8 @@ p: pet  f: feed  d: dance  o: outfit  s: sound  t: files
   hard-hat color.
 - Badges come from git: `M` modified, `A` added, `D` deleted, `R` renamed, `?` untracked, and
   `+N` lines added since the last commit (untracked files have no count). A folder shows its
-  totals, such as `+52 M:2`.
+  totals, such as `+52 M:2`. Files inside a folder git has never seen get no badge until one of
+  them is added, so a large vendored folder costs nothing.
 - **Click a file to open it in your editor.** `$VISUAL` or `$EDITOR` is used when it names a
   windowed editor (VS Code, Cursor, Windsurf, Zed, Sublime, JetBrains). Otherwise the file opens
   with `code`, then in macOS's default text editor. A file is never handed to the system opener,
