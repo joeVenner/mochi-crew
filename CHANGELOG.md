@@ -18,10 +18,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Meter toasts, once per crossing: context at 80/90%, plan or spend windows at 80/95%, and prompt
   caching that is never reported.
 - `/mascot meter`: the full report with provider notes, including a Foundry 200K-window check.
-
-### Changed
-
-- A short pane folds the meter into one summary line along with the crew.
+- A short pane folds the meter into one summary line, so the controls stay in view.
 
 ## [1.0.0] - 2026-10-11
 
