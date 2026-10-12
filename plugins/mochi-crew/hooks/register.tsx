@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer, ToolCallResult } from 'claude-code'
+import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput } from 'claude-code'
 
-import type { Bug, Care, CrewStats, Gadget, Journal, TurnLedger, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
+import type { Bug, CacheTotals, Care, CrewStats, Gadget, Journal, Measure, Provider, TurnLedger, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
 import { mascotXAt, settle } from './behavior'
@@ -25,6 +25,14 @@ import { DONE_MS, SCENE_ROWS, cellsFor } from './sprite'
 import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit, noteGreenTests, settleTurn } from './progress'
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
+import type { ProviderEnv, TtlEnv } from './meter'
+import { EMPTY_CACHE, addUsage, certainlyColdAfterMs, describeFailure, detectProvider, isCacheUnreported, isCertainlyCold, settleProvider } from './meter'
+import type { Alert } from './meterAlerts'
+import { checkAlerts } from './meterAlerts'
+import { meterReport } from './meterReport'
+import type { MeterView } from './meterRows'
+import type { Tone as MeterTone } from './meterRows'
+import { meterRows, meterSummary } from './meterRows'
 
 const PANE = 'mochi-crew'
 const TITLE = 'Mochi'
@@ -35,6 +43,16 @@ const ACCENT = 'claude'
 const TRACK = '#454a55'
 /** Theme colors kept for meaning only: something needs you, or it is your turn. */
 const THEME = { alert: 'error', good: 'success' } as const
+/** Text props for each meter tone, in the HUD's own palette. */
+const METER_TONES: Readonly<Record<MeterTone, { color?: string; dimColor?: boolean; bold?: boolean }>> = {
+  label: { dimColor: true },
+  dim: { dimColor: true },
+  value: {},
+  strong: {},
+  accent: { color: ACCENT },
+  track: { color: TRACK },
+  alert: { color: THEME.alert },
+}
 const TICK_MS = 180
 // Ask the engine which agents ended every this many ticks (~1 s), only while workers are on stage.
 const POLL_EVERY_TICKS = 6
@@ -731,18 +749,218 @@ const runMascotCommand = async ($: EngineInterface, args: string): Promise<strin
     }
     case 'missions':
       return missionReport(await read($, missions), await read($, journal))
+    case 'meter':
+      return meterReportText($)
     case 'error':
       return command.message
   }
 }
 
+// ── Session meter ──────────────────────────────────────────────────────────────────────
+// Model, context, prompt cache and limits or cost, read the way the session's provider means
+// them. The pure logic lives in meter*.ts; the wiring is here because the engine follows `$`
+// only within the hooks module.
+
+const NO_MEASURE: Measure | null = null
+const NO_MODEL: string | null = null
+const NO_RESPONSE: number | null = null
+const NO_ALERTS: readonly string[] = []
+const UNKNOWN_PROVIDER: Provider = 'unknown'
+const meterMeasure = atom({ plugin: 'mochi-crew', key: 'meterMeasure' } as const, NO_MEASURE)
+const meterCache = atom({ plugin: 'mochi-crew', key: 'meterCache' } as const, EMPTY_CACHE)
+const meterModel = atom({ plugin: 'mochi-crew', key: 'meterModel' } as const, NO_MODEL)
+const meterProvider = atom({ plugin: 'mochi-crew', key: 'meterProvider' } as const, UNKNOWN_PROVIDER)
+const meterLastResponseAt = atom({ plugin: 'mochi-crew', key: 'meterLastResponseAt' } as const, NO_RESPONSE)
+const meterAlerts = atom({ plugin: 'mochi-crew', key: 'meterAlerts' } as const, NO_ALERTS)
+
+// The environment does not change within a process; a reload re-runs session.start, which
+// reads it again. The credential can (/login, /logout), so it is re-read with each measurement.
+let providerEnv: ProviderEnv = {}
+let ttlEnv: TtlEnv = {}
+// The last credential kind read, kept when a later read fails.
+let authKind: 'bearer' | 'api-key' | null = null
+// Alert checks run one at a time, so a slower event cannot write back a stale raised list.
+let alertQueue: Promise<void> = Promise.resolve()
+
+/** The provider-selecting variables; `$.env.get` takes literals so `plugin validate` can list them. */
+const readProviderEnv = async ($: EngineInterface): Promise<ProviderEnv> => ({
+  CLAUDE_CODE_USE_ANTHROPIC_AWS: await $.env.get('CLAUDE_CODE_USE_ANTHROPIC_AWS'),
+  CLAUDE_CODE_USE_BEDROCK: await $.env.get('CLAUDE_CODE_USE_BEDROCK'),
+  CLAUDE_CODE_USE_MANTLE: await $.env.get('CLAUDE_CODE_USE_MANTLE'),
+  CLAUDE_CODE_USE_VERTEX: await $.env.get('CLAUDE_CODE_USE_VERTEX'),
+  CLAUDE_CODE_USE_FOUNDRY: await $.env.get('CLAUDE_CODE_USE_FOUNDRY'),
+  ANTHROPIC_BASE_URL: await $.env.get('ANTHROPIC_BASE_URL'),
+})
+
+const readTtlEnv = async ($: EngineInterface): Promise<TtlEnv> => ({
+  FORCE_PROMPT_CACHING_5M: await $.env.get('FORCE_PROMPT_CACHING_5M'),
+  CLAUDE_CODE_PROMPT_CACHE_TTL: await $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL'),
+})
+
+/** A figure the meter can draw, or undefined for a missing or non-finite one. */
+const finite = (value: number | undefined): number | undefined =>
+  value !== undefined && Number.isFinite(value) ? value : undefined
+
+/** The meter's copy of a measurement: only the figures it draws, each checked at the boundary. */
+const toMeasure = (e: SessionMeasureInput): Measure => {
+  const tokens = finite(e.context.tokens)
+  const percent = finite(e.context.percent)
+  return {
+    // A fill is drawn only when both halves of it are real numbers.
+    tokens: percent === undefined ? undefined : tokens,
+    percent: tokens === undefined ? undefined : percent,
+    window: finite(e.context.window) ?? 0,
+    limits: e.rateLimits.flatMap(window => {
+      const percentUsed = finite(window.percentUsed)
+      return percentUsed === undefined ? [] : [{ kind: window.kind, percentUsed }]
+    }),
+    costUsd: finite(e.cost?.usd),
+  }
+}
+
+/** Re-reads who serves the session; plan windows only appear after the first response. */
+const refreshProvider = async ($: EngineInterface, limitKinds: readonly string[]): Promise<void> => {
+  try {
+    authKind = (await $.session.authorize())?.kind ?? null
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: meter could not read the credential kind, keeping the last one: ${String(error)}`, { to: 'debug' })
+  }
+  const detected = detectProvider({ env: providerEnv, authKind, limitKinds })
+  await update($, meterProvider, (previous): Provider => settleProvider(previous, detected))
+}
+
+const refreshModel = async ($: EngineInterface): Promise<void> => {
+  const id = await $.session.model()
+  await update($, meterModel, (): string | null => (id.trim() === '' ? null : id))
+}
+
+/** Clears what counts per conversation: a new session, a `/clear`, a resume. */
+const resetConversation = async ($: EngineInterface): Promise<void> => {
+  await update($, meterCache, (): CacheTotals => EMPTY_CACHE)
+  await update($, meterLastResponseAt, (): number | null => NO_RESPONSE)
+  await update($, meterAlerts, (): readonly string[] => NO_ALERTS)
+  await update($, meterMeasure, (): Measure | null => NO_MEASURE)
+}
+
+/** Toasts each heads-up the latest figures newly call for, once per crossing. */
+const checkAndToast = async ($: EngineInterface): Promise<void> => {
+  const current = await read($, meterMeasure)
+  const facts = {
+    contextPercent: current?.tokens === undefined ? undefined : current.percent,
+    limits: current?.limits ?? [],
+    isCacheUnreported: isCacheUnreported(await read($, meterCache)),
+  }
+  // Decided inside the update, so two events racing for one alert toast it once.
+  let due: readonly Alert[] = []
+  await update($, meterAlerts, raised => {
+    const check = checkAlerts(raised, facts)
+    due = check.due
+    return check.raised
+  })
+  for (const alert of due) $.ui.toast(alert.text)
+}
+
+/** Queues an alert check behind any still running, so each reads the figures its turn left. */
+const raiseAlerts = ($: EngineInterface): Promise<void> => {
+  const run = alertQueue.then(() => checkAndToast($))
+  alertQueue = run.catch((error: unknown) => $.ui.log(`mochi-crew: meter alert check failed: ${String(error)}`, { to: 'debug' }))
+  return run
+}
+
+/**
+ * A failed meter hook steps aside for the engine, leaving its reason in the debug log. In a
+ * re-entry failure the log call itself rejects; the engine then treats the hook as absent,
+ * which is the same outcome, and its own line for the failure still stands.
+ */
+const logFailure = ($: EngineInterface, hook: string, failure: HookFailure): void =>
+  $.ui.log(`mochi-crew: meter ${hook} failed: ${describeFailure(failure)}`, { to: 'debug' })
+
+/** Time since the last main-thread turn ended, null before one or while a turn runs. */
+const idleAt = async ($: EngineInterface, isWorking: boolean): Promise<number | null> => {
+  const respondedAt = await read($, meterLastResponseAt)
+  return respondedAt === null || isWorking ? null : (await $.clock.now()) - respondedAt
+}
+
+/** Everything the HUD's meter rows show, read from state only (the pane draws from this). */
+const readMeterView = async ($: EngineInterface, isWorking: boolean): Promise<MeterView> => {
+  const idleMs = await idleAt($, isWorking)
+  return {
+    modelId: await read($, meterModel),
+    provider: await read($, meterProvider),
+    measure: await read($, meterMeasure),
+    cache: await read($, meterCache),
+    idleMs,
+    isCold: idleMs !== null && isCertainlyCold(idleMs, ttlEnv),
+  }
+}
+
+/** The `/mascot meter` report. */
+const meterReportText = async ($: EngineInterface): Promise<string> => {
+  const view = await readMeterView($, false)
+  return meterReport({ ...view, coldAfterMs: certainlyColdAfterMs(ttlEnv) })
+}
+
+/**
+ * Starts the meter for a new session: reads the provider's environment and the model.
+ * Called from Mochi's own session.start hook (a plugin hooks each event once); it never
+ * throws, so a meter failure cannot stop Mochi from starting.
+ */
+const startMeter = async ($: EngineInterface): Promise<void> => {
+  try {
+    providerEnv = await readProviderEnv($)
+    ttlEnv = await readTtlEnv($)
+    await resetConversation($)
+    await refreshModel($)
+    await refreshProvider($, [])
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: meter could not start: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+/**
+ * Counts one finished turn: idle restarts and, on the main thread, the cache totals grow.
+ * Called from Mochi's own turn.complete hook; it never throws.
+ */
+const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<void> => {
+  // Subagents run their own caches; counting them would skew the main conversation's rate.
+  if (e.agentId !== undefined) return
+  try {
+    // Any main turn may have touched the cache, an interrupted one included, so idle counts
+    // from its end; that keeps "cold" from being claimed while the cache is still warm.
+    const now = await $.clock.now()
+    await update($, meterLastResponseAt, (): number | null => now)
+    const usage = e.usage
+    if (usage !== undefined) await update($, meterCache, totals => addUsage(totals, usage))
+    await refreshModel($)
+    await raiseAlerts($)
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: meter could not count a turn: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+
 export const register: Register = on => {
+  on('session.end', async ($, e, next) => {
+    // Every ending closes this conversation's figures, a /clear and a resume included.
+    await resetConversation($)
+    return next(e)
+  }).catch(($, e, next) => (logFailure($, 'session.end', next.error), next(e)))
+
+  on('session.measure', async ($, e, next) => {
+    await update($, meterMeasure, (): Measure | null => toMeasure(e))
+    await refreshProvider($, e.rateLimits.map(window => window.kind))
+    await refreshModel($)
+    await raiseAlerts($)
+    return next(e)
+  }).catch(($, e, next) => (logFailure($, 'session.measure', next.error), next(e)))
+
   on('session.start', async ($, e, next) => {
     await loadSaved($)
+    await startMeter($)
     await $.command.register({
       name: 'mascot',
-      description: 'Open the Mochi crew pane, read the session journal, change outfit, toggle sound',
-      argumentHint: '[journal | missions | achievements | outfits | outfit <name> | sound on|off]',
+      description: 'Open the Mochi crew pane, read the session journal or meter, change outfit, toggle sound',
+      argumentHint: '[journal | missions | achievements | meter | outfits | outfit <name> | sound on|off]',
     })
     void $.ui.open({ id: PANE, title: TITLE })
 
@@ -819,6 +1037,7 @@ export const register: Register = on => {
     void (agentId === undefined ? endTurn($, e.turnId, outcome, e.durationMs) : releaseWorker($, agentId)).catch((error: unknown) =>
       $.ui.log(`mochi-crew: could not follow a turn's end: ${String(error)}`, { to: 'debug' }),
     )
+    void noteMeterTurn($, e)
     return completed
   }).catch(($, e, next) => next(e))
 
@@ -845,17 +1064,20 @@ export const register: Register = on => {
     const { Box, Text, Button } = $.ui.resolve(e)
     // Only the terminal draws the scene above the HUD.
     const isTerminal = e.surface === 'terminal'
-    const { isCompact } = hudPlan(e.props.scroll.bodyRows, isTerminal ? SCENE_ROWS : 0, {
-      hasBubble: bubble !== null,
-      hasTurnLine: turnLine !== null,
-      workerCount: onStage.length,
-    })
-    const crewLine = isCompact ? crewSummary(onStage) : null
-
     // One accent (the theme's own Claude orange); red and green only when something needs you.
     const columns = e.props.bodyColumns
     const barWidth = barWidthFor(columns)
     const rule = ruleFor(columns)
+    const meterView = await readMeterView($, isThinking(currentTurn))
+    const meter = meterRows(meterView, barWidth)
+    const { isCompact } = hudPlan(e.props.scroll.bodyRows, isTerminal ? SCENE_ROWS : 0, {
+      hasBubble: bubble !== null,
+      hasTurnLine: turnLine !== null,
+      workerCount: onStage.length,
+      meterRows: meter.length,
+    })
+    const crewLine = isCompact ? crewSummary(onStage) : null
+    const meterLine = isCompact ? meterSummary(meterView) : null
     const isTrouble = (current.kind === 'done' && current.hasFailed) || isBugAlive(liveBug)
     const bar = (key: string, fraction: number) => {
       const { filled, empty } = barCells(fraction, barWidth)
@@ -908,6 +1130,21 @@ export const register: Register = on => {
           <Text>
             <Text dimColor>{gutter('log')}</Text>
             <Text dimColor>{diaryLine}</Text>
+          </Text>
+        )}
+        {!isCompact && meter.length > 0 && <Text dimColor>{rule}</Text>}
+        {!isCompact && meter.map(row => (
+          // Truncated, never wrapped: a wrapped row would push the controls out of view.
+          <Text key={row.key} wrap="truncate-end">
+            {row.cells.map((cell, index) => (
+              <Text key={String(index)} {...METER_TONES[cell.tone]}>{cell.text}</Text>
+            ))}
+          </Text>
+        ))}
+        {meterLine !== null && (
+          <Text wrap="truncate-end">
+            <Text dimColor>{gutter('meter')}</Text>
+            <Text>{meterLine}</Text>
           </Text>
         )}
         {crewLine !== null && (

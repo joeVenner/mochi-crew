@@ -15,14 +15,24 @@ describe('hud', () => {
   })
 
   test('optional rows count: bubble, turn line, up to three workers and a "more" line', async () => {
-    expect(fullHudRows({ hasBubble: false, hasTurnLine: false, workerCount: 0 })).toBe(FULL_HUD_ROWS)
-    expect(fullHudRows({ hasBubble: true, hasTurnLine: true, workerCount: 2 })).toBe(FULL_HUD_ROWS + 4)
-    expect(fullHudRows({ hasBubble: false, hasTurnLine: false, workerCount: 5 })).toBe(FULL_HUD_ROWS + 4)
+    expect(fullHudRows({ hasBubble: false, hasTurnLine: false, workerCount: 0, meterRows: 0 })).toBe(FULL_HUD_ROWS)
+    expect(fullHudRows({ hasBubble: true, hasTurnLine: true, workerCount: 2, meterRows: 0 })).toBe(FULL_HUD_ROWS + 4)
+    expect(fullHudRows({ hasBubble: false, hasTurnLine: false, workerCount: 5, meterRows: 0 })).toBe(FULL_HUD_ROWS + 4)
     // A pane that fits the quiet HUD goes compact once a busy crew would push the keys away.
-    const busy = { hasBubble: true, hasTurnLine: true, workerCount: 3 }
+    const busy = { hasBubble: true, hasTurnLine: true, workerCount: 3, meterRows: 0 }
     expect(hudPlan(16 + FULL_HUD_ROWS, 16).isCompact).toBe(false)
     expect(hudPlan(16 + FULL_HUD_ROWS, 16, busy).isCompact).toBe(true)
     expect(hudPlan(16 + fullHudRows(busy), 16, busy).isCompact).toBe(false)
+  })
+
+  test('the session meter adds its rows and one rule, and nothing before its first measurement', async () => {
+    const quiet = { hasBubble: false, hasTurnLine: false, workerCount: 0, meterRows: 0 }
+    expect(fullHudRows(quiet)).toBe(FULL_HUD_ROWS)
+    expect(fullHudRows({ ...quiet, meterRows: 4 })).toBe(FULL_HUD_ROWS + 5)
+    // A pane that fits the HUD goes compact once the meter's rows would push the keys away.
+    expect(hudPlan(16 + FULL_HUD_ROWS, 16, quiet).isCompact).toBe(false)
+    expect(hudPlan(16 + FULL_HUD_ROWS, 16, { ...quiet, meterRows: 4 }).isCompact).toBe(true)
+    expect(hudPlan(16 + FULL_HUD_ROWS + 5, 16, { ...quiet, meterRows: 4 }).isCompact).toBe(false)
   })
 
   test('the combo badge shows from a streak of 2', async () => {
