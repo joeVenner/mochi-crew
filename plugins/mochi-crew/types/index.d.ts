@@ -88,6 +88,60 @@ export type TurnLedger = {
 /** Mochi's outfits; hooks/outfits.ts must define a pixel overlay for each. */
 export type OutfitName = 'classic' | 'wizard' | 'pirate' | 'party' | 'shades' | 'crown'
 
+/**
+ * Who serves and bills the session's model requests, for the session meter.
+ *
+ * `subscription`: a claude.ai plan (rate-limit windows reported). `api-key`: a Claude
+ * Console key. `anthropic`: first-party, billing not yet known (no limits reported yet).
+ * `gateway`: a custom ANTHROPIC_BASE_URL or a Claude apps gateway. The cloud ones are
+ * selected by their CLAUDE_CODE_USE_* variable.
+ */
+export type Provider =
+  | 'subscription'
+  | 'api-key'
+  | 'anthropic'
+  | 'bedrock'
+  | 'vertex'
+  | 'foundry'
+  | 'anthropic-aws'
+  | 'gateway'
+  | 'unknown'
+
+/** Prompt-cache token totals for the main conversation, summed over its turns. */
+export type CacheTotals = {
+  /** Main-thread turns that reported usage. */
+  readonly turns: number
+  /** Input tokens served from the cache. */
+  readonly read: number
+  /** Input tokens written to the cache. */
+  readonly write: number
+  /** Input tokens neither read from nor written to the cache. */
+  readonly uncached: number
+  /** Output tokens generated. */
+  readonly output: number
+}
+
+/** One rate-limit window as the meter keeps it. */
+export type LimitWindow = {
+  /** `five_hour`, `seven_day`, or a gateway's `spend_limit`. */
+  readonly kind: string
+  /** 0 to 100, past 100 on an exceeded spend limit. */
+  readonly percentUsed: number
+}
+
+/** The latest session measurement the meter draws from. */
+export type Measure = {
+  /** Input tokens of the last response; absent before the first response and after a compact. */
+  readonly tokens?: number
+  /** The model's context window in tokens; 0 when the engine reported no usable size. */
+  readonly window: number
+  /** `tokens` over `window`, 0 to 100; absent with `tokens`. */
+  readonly percent?: number
+  readonly limits: readonly LimitWindow[]
+  /** US dollars at list (or configured) price; absent where the host keeps no ledger. */
+  readonly costUsd?: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'mochi-crew': {
@@ -105,6 +159,17 @@ declare module 'claude-code' {
       journal: Journal
       ledger: TurnLedger
       missions: readonly string[]
+      /** Session meter: the latest measurement, null before one. */
+      meterMeasure: Measure | null
+      /** Session meter: main-conversation prompt-cache totals. */
+      meterCache: CacheTotals
+      /** Session meter: the session's model id, null before it is known. */
+      meterModel: string | null
+      meterProvider: Provider
+      /** Session meter: clock ms of the last main-thread turn's end, null before one. */
+      meterLastResponseAt: number | null
+      /** Session meter: alert keys already raised (e.g. `context:90`), once per crossing. */
+      meterAlerts: readonly string[]
     }
   }
 }

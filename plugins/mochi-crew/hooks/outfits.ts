@@ -65,9 +65,10 @@ export type MascotCommand =
   | { kind: 'outfit'; name: OutfitName }
   | { kind: 'sound'; isOn: boolean }
   | { kind: 'react'; reaction: 'pet' | 'feed' | 'dance' }
+  | { kind: 'meter' }
   | { kind: 'error'; message: string }
 
-export const MASCOT_USAGE = 'usage: /mascot [pet | feed | dance | journal | missions | achievements | outfits | outfit <name> | sound on|off]'
+export const MASCOT_USAGE = 'usage: /mascot [pet | feed | dance | journal | missions | achievements | meter | outfits | outfit <name> | sound on|off]'
 
 /** Parses `/mascot` arguments; never throws, an unknown request is an `error` with usage. */
 export const parseMascotCommand = (args: string): MascotCommand => {
@@ -78,6 +79,7 @@ export const parseMascotCommand = (args: string): MascotCommand => {
   if (verb === 'achievements' && value === undefined) return { kind: 'achievements' }
   if (verb === 'journal' && value === undefined) return { kind: 'journal' }
   if (verb === 'missions' && value === undefined) return { kind: 'missions' }
+  if (verb === 'meter' && value === undefined) return { kind: 'meter' }
   if ((verb === 'pet' || verb === 'feed' || verb === 'dance') && value === undefined) return { kind: 'react', reaction: verb }
   if (verb === 'outfit') {
     if (isOutfitName(value)) return { kind: 'outfit', name: value }

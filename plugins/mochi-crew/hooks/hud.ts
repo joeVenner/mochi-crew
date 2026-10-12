@@ -13,17 +13,21 @@ export type HudExtras = {
   hasTurnLine: boolean
   /** Workers on stage. */
   workerCount: number
+  /** Session meter rows showing (none before its first measurement), its rule not included. */
+  meterRows: number
 }
 
-const NO_EXTRAS: HudExtras = { hasBubble: false, hasTurnLine: false, workerCount: 0 }
+const NO_EXTRAS: HudExtras = { hasBubble: false, hasTurnLine: false, workerCount: 0, meterRows: 0 }
 
 /** Rows the full HUD needs right now: the fixed rows plus whatever optional rows are showing. */
-export const fullHudRows = ({ hasBubble, hasTurnLine, workerCount }: HudExtras): number =>
+export const fullHudRows = ({ hasBubble, hasTurnLine, workerCount, meterRows }: HudExtras): number =>
   FULL_HUD_ROWS +
   Number(hasBubble) +
   Number(hasTurnLine) +
   Math.min(workerCount, MAX_VISIBLE_WORKERS) +
-  Number(workerCount > MAX_VISIBLE_WORKERS)
+  Number(workerCount > MAX_VISIBLE_WORKERS) +
+  // The meter's rows, plus the rule above them.
+  (meterRows > 0 ? meterRows + 1 : 0)
 
 /** How much of the HUD fits the pane. */
 export type HudPlan = {
@@ -38,6 +42,12 @@ export type HudPlan = {
 export const hudPlan = (bodyRows: number, sceneRows: number, extras: HudExtras = NO_EXTRAS): HudPlan => ({
   isCompact: bodyRows < sceneRows + fullHudRows(extras),
 })
+
+/**
+ * Bars are drawn with a heavy line glyph, not background-colored cells: a background fills
+ * the whole line height, so bars on consecutive rows merged into one block.
+ */
+export const BAR_GLYPH = '━'
 
 /** Width of the label column every HUD row starts with. */
 export const GUTTER = 8
