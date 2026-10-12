@@ -10,9 +10,10 @@
 
 Mochi types when Claude edits, grabs a hammer when a command runs, thinks along while Claude works,
 and waves when it's your turn. Subagents join as a crew of kittens in role costumes. Fixed bugs,
-green tests and shipped turns earn XP, missions and badges.
+green tests and shipped turns earn XP, missions and badges. A session meter under the HUD shows
+your model, context fill, prompt-cache hit rate, and plan limits or cost.
 
-[Install](#install) · [What it does](#what-it-does) · [The crew](#the-crew) · [Controls](#controls) · [Privacy](#privacy-and-safety) · [Development](#development)
+[Install](#install) · [What it does](#what-it-does) · [The crew](#the-crew) · [Session meter](#session-meter) · [Controls](#controls) · [Privacy](#privacy-and-safety) · [Development](#development)
 
 </div>
 
@@ -110,10 +111,16 @@ streak   x8  badges 4/6
 ──────────────────────────────────────────
 next    Get the tests green  0/4
 log     3 files · 5 turns · 4m 12s working
+──────────────────────────────────────────
+model   opus 5.5  plan
+context  62  ━━━━━━━━━━━━━━━━━━━━━━━━  620k/1M
+cache   91%  idle 2m
+5h       34  ━━━━━━━━━━━━━━━━━━━━━━━━  7d 12%
 p: pet  f: feed  d: dance  o: outfit  s: sound
 ```
 
-In a short pane it folds into a compact layout, so the controls never scroll away.
+In a short pane it folds into a compact layout, so the controls never scroll away. The meter
+becomes one line there: `meter   ctx 62% · cache 91% · 5h 34%`.
 
 ### Progress that means something
 
@@ -136,6 +143,48 @@ and `pytest --collect-only` don't.
 to a subagent. **Badges** (kept across sessions): First Hire, Full Crew, On Fire, Night Owl,
 Bug Squasher, Veteran.
 
+## Session meter
+
+The last group of the HUD reads your session the way your provider means it. It appears after
+Claude's first reply.
+
+| Row | Meaning |
+|---|---|
+| `model   opus 5.5  plan` | the session's model, shortened from any provider's id, and who serves it (`plan`, `api key`, `bedrock`, `vertex`, `foundry`, `gateway`) |
+| `context  62  ━━━  620k/1M` | context used against the model's window. It turns red from 85%, where auto-compact is close, and reads `–` right after a compact |
+| `cache   91%  idle 2m` | share of the main conversation's input served from the prompt cache (subagents keep caches of their own and are left out). `cold` shows only once the cache has certainly expired |
+| `5h  34  ━━━  7d 12%` | on a Claude plan: the fullest usage window as a bar, the others as a note |
+| `cost    $4.12 est` | on per-token billing (API key, Bedrock, Vertex, Foundry): the list-price estimate |
+
+A toast appears once when context reaches 80% or 90%, when a plan or spend window reaches 80% or
+95%, or when prompt caching is never reported after three turns. That last one usually means a
+gateway is stripping `cache_control`, so every turn bills as uncached input. A toast fires again only
+after the figure falls 5 points below its line.
+
+`/mascot meter` prints the full report: every figure, token totals, and notes for your provider.
+
+| | Plan | API key | Bedrock | Vertex | Microsoft Foundry | Gateway |
+|---|---|---|---|---|---|---|
+| Limit row | 5h and 7d | none | none | none | none (Azure quotas are per minute) | spend limit, if set |
+| Cost | not billed (only in `/mascot meter`) | estimate; the Console is the bill | estimate; AWS bills | estimate; Google bills | estimate; Azure bills (CCU) | estimate |
+| Default cache TTL | 1h (5m on usage credits) | 5m | 5m (1h varies by model) | 5m | 5m | depends on the gateway |
+
+How the provider is detected: a `CLAUDE_CODE_USE_BEDROCK`, `_MANTLE`, `_VERTEX`, `_FOUNDRY` or
+`_ANTHROPIC_AWS` flag set to `1`, `true`, `yes` or `on` comes first. A gateway spend-limit window
+comes next, then 5h/7d plan windows, which mark a plan even behind a proxy. After that, a
+non-Anthropic `ANTHROPIC_BASE_URL` marks a gateway and an API key marks Console billing. A sign-in
+whose plan windows haven't arrived yet shows no dollars. On Foundry, Claude Code assumes a 200K window
+for a deployment name it can't map to a model, and `/mascot meter` points that out.
+
+Sources, as of October 2026: Claude Code's docs on
+[prompt caching](https://code.claude.com/docs/en/prompt-caching),
+[costs](https://code.claude.com/docs/en/costs),
+[Microsoft Foundry](https://code.claude.com/docs/en/microsoft-foundry) and
+[environment variables](https://code.claude.com/docs/en/env-vars); Microsoft Learn on
+[Claude in Foundry](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models)
+and [its quotas](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models-quotas-limits);
+AWS on [Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html).
+
 ## Controls
 
 Focus the pane (`ctrl+x tab`, or click it) and press:
@@ -156,6 +205,7 @@ Commands:
 /mascot journal                this session: turns and time, edits, commands, fixes, files
 /mascot missions               this session's goals and progress
 /mascot achievements           badges earned and how to earn the rest
+/mascot meter                  the session meter in full, with notes for your provider
 /mascot outfits                list outfits
 /mascot outfit <name>          classic, wizard, pirate, party, shades, crown
 /mascot sound on|off           8-bit sound effects (off by default)
@@ -165,14 +215,17 @@ Commands:
 
 ## Privacy and safety
 
-- **Local only.** Nothing leaves your machine. The mod makes no network requests.
+- **Local only.** Nothing leaves your machine. The mod makes no network requests. The session
+  meter reads figures Claude Code already has, plus the provider-selection and cache-TTL environment
+  variables by name. It asks only whether the session uses a key or a sign-in, never for the
+  credential itself.
 - **Secrets are masked on screen.** Commands shown in the HUD have tokens, auth headers, URL
   credentials and secret-looking env vars or flags replaced with `••••`. This affects the display
   only; your commands run unchanged.
 - **Never in the way.** Every hook passes the tool call through untouched, even if Mochi's own
   bookkeeping fails, and all scoring happens after the result is already on its way back.
 - **What is saved.** Level, XP, outfit, sound setting, mood, energy and badges persist in Claude
-  Code's per-plugin store. The session journal and missions reset every session.
+  Code's per-plugin store. The session journal, missions and meter reset every session.
 
 ## Development
 
@@ -202,7 +255,7 @@ state and the pane.
 
 | File | Responsibility |
 |---|---|
-| `register.tsx` | hooks, state, animation ticker, pane and HUD |
+| `register.tsx` | hooks, state, animation ticker, pane and HUD, session meter wiring |
 | `canvas.ts` · `world.ts` · `sprite.ts` · `workerArt.ts` | pixel canvas, the room, Mochi, the kittens |
 | `behavior.ts` | walking, idle routines, sleep |
 | `crew.ts` · `roles.ts` | subagent workers and their costumes |
@@ -210,6 +263,7 @@ state and the pane.
 | `journal.ts` · `missions.ts` · `achievements.ts` | session journal, missions, badges |
 | `care.ts` · `events.ts` | mood and reactions, bugs and quips |
 | `hud.ts` · `mascot.ts` · `redact.ts` | HUD layout, labels, secret masking |
+| `meter.ts` · `meterRows.ts` · `meterAlerts.ts` · `meterReport.ts` | session meter: provider detection and figures, HUD rows, alerts, `/mascot meter` |
 
 ## License
 
