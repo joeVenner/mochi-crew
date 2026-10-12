@@ -10,12 +10,12 @@ This folder is not part of the plugin: the marketplace installs `plugins/mochi-c
 cd promo
 npm ci
 npm run studio      # preview and scrub in the browser
-npm run render      # out/mochi-promo.mp4, 1920×1080, about 28 s
+npm run render      # out/mochi-promo.mp4, 1920×1080, 28.5 s
 npm run typecheck
 ```
 
-Remotion downloads its own headless browser and ships its own ffmpeg on first use; nothing else is
-needed. Remotion is free for individuals, non-profits and companies of up to 3 employees; larger companies need a
+Remotion ships its own ffmpeg and downloads its own headless browser on first use, and the two
+Google Fonts (JetBrains Mono, Press Start 2P) load at render time, so rendering needs network. Remotion is free for individuals, non-profits and companies of up to 3 employees; larger companies need a
 [company license](https://www.remotion.dev/license).
 
 | Scene | Length | Shows |

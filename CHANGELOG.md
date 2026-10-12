@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- `promo/`: a Remotion project that renders a 28-second promo video, drawing Mochi, the crew and
+- `promo/`: a Remotion project that renders a 28.5-second promo video, drawing Mochi, the crew and
   the session meter with the plugin's own code. It is not part of the installed plugin.
 
 ## [1.1.0] - 2026-10-12
