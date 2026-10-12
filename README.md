@@ -285,6 +285,9 @@ Type-checking (`npx -y -p typescript@5.6.3 tsc -p .`) uses the engine type defin
 Code writes to `.claude-plugin/types/` when it loads the plugin, so load it once (install it, or
 start Claude Code with `--plugin-dir plugins/mochi-crew`) before running `tsc`.
 
+The promo video lives in [`promo/`](promo/README.md), a Remotion project that draws Mochi with the
+plugin's own renderer. It is not part of what the marketplace installs.
+
 ### Releasing
 
 This repository is itself a Claude Code plugin marketplace: `.claude-plugin/marketplace.json` at the
