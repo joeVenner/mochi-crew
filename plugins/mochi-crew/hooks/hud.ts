@@ -48,8 +48,8 @@ export const hudPlan = (bodyRows: number, sceneRows: number, extras: HudExtras =
 
 /**
  * Rows left for the file tree's entries under the full HUD (which already holds the tree's
- * header line), less the rule above the tree. The tree only takes what is left over, so
- * showing it never folds the rest of the HUD.
+ * header line), less the rule above the tree. The entries only take what is left over; the
+ * one line the tree always keeps counts in the HUD, so the controls never scroll away.
  */
 export const treeBudget = (bodyRows: number, sceneRows: number, extras: HudExtras): number =>
   Math.max(0, bodyRows - sceneRows - fullHudRows({ ...extras, hasTreeLine: true }) - 1)

@@ -33,6 +33,8 @@ type Disk = {
   /** Every command the plugin ran, as argv. */
   runs: string[][]
   toasts: string[]
+  /** Set to make git status and diff time out from now on. */
+  isGitStuck: boolean
 }
 
 /**
@@ -40,7 +42,7 @@ type Disk = {
  * overrides where a path resolves, to stand in for a symbolic link.
  */
 const project = (on: On, realPaths: Readonly<Record<string, string>> = {}): Disk => {
-  const disk: Disk = { runs: [], toasts: [] }
+  const disk: Disk = { runs: [], toasts: [], isGitStuck: false }
   on('session.root', () => ({ value: '/repo' }))
   on('env.get', () => ({ value: undefined }))
   on('fs.list', ($, e) => ({ value: LISTINGS[e.path] ?? [] }))
@@ -48,8 +50,10 @@ const project = (on: On, realPaths: Readonly<Record<string, string>> = {}): Disk
   on('process.run', ($, e) => {
     disk.runs.push([...e.argv])
     const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '' } as never })
-    const [program, verb] = e.argv
+    const [program] = e.argv
+    const verb = e.argv.find(arg => ['rev-parse', 'status', 'diff', 'branch'].includes(arg))
     if (program !== 'git') return ok('')
+    if (disk.isGitStuck && (verb === 'status' || verb === 'diff')) throw new Error('timed out')
     if (verb === 'rev-parse') return ok('\n')
     if (verb === 'status') return ok(' M hooks/README.md\0')
     if (verb === 'diff') return ok('1\t0\thooks/README.md\0')
@@ -101,6 +105,22 @@ describe('file tree pane', () => {
 
     expect(disk.toasts.some(text => text.includes('not a file in this project'))).toBe(true)
     expect(disk.runs.some(argv => argv[0] !== 'git')).toBe(false)
+    await ui.unmount()
+  })
+
+  test('a git call that times out keeps the last badges', async ($, on) => {
+    mock.clock(on)
+    mock.store(on)
+    const disk = project(on)
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: paneProps() })
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/README.md', old_string: 'a', new_string: 'b' })
+    await shows(ui, 'M:1')
+
+    disk.isGitStuck = true
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/config.yaml', old_string: 'a', new_string: 'b' })
+
+    await shows(ui, 'config.yaml')
+    await shows(ui, 'M:1')
     await ui.unmount()
   })
 

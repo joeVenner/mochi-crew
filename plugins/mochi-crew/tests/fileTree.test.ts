@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { TreeEntry, TreeSnapshot } from '../types'
 import {
   MAX_TOUCHED, anchorOf, ancestorsOf, badgeOf, expandedDirs, isInside, isMissingListing, parseGitStatus,
-  parseNumstat, relativeTo, rowParts, toEntries, touch, treeLine, treeRows, windowRows,
+  parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows,
 } from '../hooks/fileTree'
 import type { TreeRow } from '../hooks/fileTree'
 
@@ -118,7 +118,7 @@ describe('tree rows', () => {
       touched: [{ path: 'f18.ts' }],
       maxPerDir: 5,
     })
-    expect(keys(rows)).toEqual(['f00.ts', 'f01.ts', 'f02.ts', 'f03.ts', 'f04.ts', 'f18.ts', 'more:'])
+    expect(keys(rows)).toEqual(['f00.ts', 'f01.ts', 'f02.ts', 'f03.ts', 'f04.ts', 'f18.ts', 'more:/'])
     expect(rows.at(-1)?.name).toBe('… 14 more')
   })
 
@@ -210,5 +210,19 @@ describe('row layout', () => {
     expect(parts.name.endsWith('…')).toBe(true)
     const width = parts.indent.length + parts.glyph.length + parts.name.length + 2 + parts.badge.length
     expect(width).toBe(24)
+  })
+})
+
+describe('safe text', () => {
+  test('escape sequences and bidi controls in names are drawn inert', async () => {
+    expect(safeText('a\u001b]52;c;AAAA\u0007b')).toBe('a?]52;c;AAAA?b')
+    expect(safeText('evil\u202egnp.js')).toBe('evil?gnp.js')
+    expect(safeText('plain-name.ts')).toBe('plain-name.ts')
+  })
+
+  test('rows and the folded line show the safe form', async () => {
+    const row: TreeRow = { key: 'x\u001b[2Jy', kind: 'file', depth: 0, name: 'x\u001b[2Jy', isOpen: false, tone: 'plain', changes: 0, added: 0 }
+    expect(rowParts(row, 40).name).toBe('x?[2Jy')
+    expect(treeLine(null, [{ path: 'a\u0007.ts' }])).toBe('last a?.ts')
   })
 })

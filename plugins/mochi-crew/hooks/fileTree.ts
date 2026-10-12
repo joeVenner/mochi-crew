@@ -9,6 +9,13 @@ export const MAX_TOUCHED = 40
 /** Folders never opened, however a path inside them was touched. */
 const NEVER_OPENED: ReadonlySet<string> = new Set(['.git', 'node_modules'])
 
+// Control characters (C0, DEL, C1) and bidi or line separators: a file name holding them could
+// drive the terminal (an escape sequence) or reorder what the row shows.
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
+
+/** Text from disk, git or a tool call made safe to draw: each control character becomes `?`. */
+export const safeText = (text: string): string => text.replace(UNSAFE_TEXT, '?')
+
 /** How a row is drawn: the live file, a subagent's file, one touched earlier, or a plain or dim one. */
 export type RowTone = 'active' | 'worker' | 'touched' | 'plain' | 'dim'
 
@@ -81,11 +88,15 @@ export const expandedDirs = (paths: readonly string[]): ReadonlySet<string> => {
   return dirs
 }
 
-/** A listing as the tree keeps it: folders first, then names in a case-blind order. */
+/** Entries kept per folder listing: past this a folder is generated or vendored, not browsed. */
+export const MAX_LISTED = 2000
+
+/** A listing as the tree keeps it: folders first, then names in a case-blind order, capped. */
 export const toEntries = (listing: readonly { name: string; kind: 'file' | 'dir' | 'other' }[]): readonly TreeEntry[] =>
   listing
     .map(entry => ({ name: entry.name, isDir: entry.kind === 'dir' }))
     .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+    .slice(0, MAX_LISTED)
 
 /** A repo-relative git path made relative to the session root (`prefix` is `git rev-parse --show-prefix`). */
 const underPrefix = (path: string, prefix: string): string | undefined =>
@@ -223,7 +234,7 @@ export const treeRows = ({ snapshot, focus, touched, maxPerDir = MAX_ENTRIES_PER
     }
     const hidden = entries.length - kept.length
     if (hidden > 0) {
-      rows.push({ key: `more:${dir}`, kind: 'more', depth, name: `… ${hidden} more`, isOpen: false, tone: 'dim', changes: 0, added: 0 })
+      rows.push({ key: `more:${dir}/`, kind: 'more', depth, name: `… ${hidden} more`, isOpen: false, tone: 'dim', changes: 0, added: 0 })
     }
   }
 
@@ -277,9 +288,9 @@ export const badgeOf = (row: TreeRow): string => {
 
 /** The folded section's one line: what the main loop works on, else the last file touched. */
 export const treeLine = (focus: TreeFocus | null, touched: readonly TouchedFile[]): string | null => {
-  if (focus !== null) return `${focus.kind === 'edit' ? 'editing' : 'reading'} ${focus.path}`
+  if (focus !== null) return `${focus.kind === 'edit' ? 'editing' : 'reading'} ${safeText(focus.path)}`
   const last = touched.at(-1)
-  return last === undefined ? null : `last ${last.path}`
+  return last === undefined ? null : `last ${safeText(last.path)}`
 }
 
 /** Notes a touch: the file moves to the end, carrying who touched it this time. */
@@ -306,6 +317,8 @@ export const rowParts = (row: TreeRow, columns: number): RowParts => {
     : '  '
   const badge = badgeOf(row)
   const room = Math.max(4, columns - indent.length - glyph.length - (badge === '' ? 0 : badge.length + 2))
-  const name = row.name.length <= room ? row.name : `${row.name.slice(0, room - 1)}…`
+  // Counted by code point, so a cut never splits a surrogate pair.
+  const shown = [...safeText(row.name)]
+  const name = shown.length <= room ? shown.join('') : `${shown.slice(0, room - 1).join('')}…`
   return { indent, glyph, name, badge }
 }
