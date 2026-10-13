@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-13
+
 ### Added
 
 - `promo/`: a Remotion project that renders a promo video, drawing Mochi, the crew, the session
@@ -14,6 +16,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   is not part of the installed plugin.
 - `npm run thumbnail` in `promo/`: a 1920×1080 cover still for the video, drawn with the plugin's
   own scene and file tree.
+
+### Changed
+
+- The file tree lists edited files, and the folders holding them, first in each folder, so a short
+  pane is far less likely to cut the file Claude is editing behind a `↓ N more` line. A file
+  Claude only reads keeps its place.
 
 ## [1.2.0] - 2026-10-12
 

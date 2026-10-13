@@ -189,7 +189,9 @@ AWS on [Bedrock prompt caching](https://docs.aws.amazon.com/bedrock/latest/userg
 ## File tree
 
 The bottom of the HUD shows the project as a tree, focused on this session's work: only the
-folders that lead to files Claude edited are open, and the rest stay closed.
+folders that lead to files Claude edited are open, and the rest stay closed. Each folder lists the
+edited files, and the folders holding them, first, so the session's work stays in view even in a
+short pane.
 
 ```
 ──────────────────────────────────────────
