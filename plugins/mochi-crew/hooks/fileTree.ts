@@ -178,14 +178,22 @@ export type TreeInput = {
   readonly maxPerDir?: number
 }
 
+/** Edited files and every folder that holds one: what each folder lists first. */
+const editedPaths = (touched: readonly TouchedFile[], focus: TreeFocus | null): ReadonlySet<string> => {
+  const files = [...touched.map(file => file.path), ...(focus?.kind === 'edit' ? [focus.path] : [])].filter(isOpenable)
+  return new Set([...files, ...files.flatMap(ancestorsOf)])
+}
+
 /**
  * The tree's rows, depth first: folders on the way to a touched or live file are open, every
- * other folder closed. A folder longer than `maxPerDir` folds its tail into one `… N more`
- * row, but never hides a touched or live file.
+ * other folder closed. Each folder lists what leads to an edited file first, so the session's
+ * work sits at the top of the tree. A folder longer than `maxPerDir` folds its tail into one
+ * `… N more` row, but never hides a touched or live file.
  */
 export const treeRows = ({ snapshot, focus, touched, maxPerDir = MAX_ENTRIES_PER_DIR }: TreeInput): readonly TreeRow[] => {
   const touches = touchIndex(touched)
   const open = expandedDirs([...touches.keys(), ...(focus === null ? [] : [focus.path])])
+  const edited = editedPaths(touched, focus)
   const totals = rollUp(snapshot)
   const rows: TreeRow[] = []
 
@@ -208,8 +216,13 @@ export const treeRows = ({ snapshot, focus, touched, maxPerDir = MAX_ENTRIES_PER
   }
 
   const walk = (dir: string, depth: number): void => {
-    const entries = snapshot.listings[dir] ?? []
     const pathOf = (name: string): string => (dir === '' ? name : `${dir}/${name}`)
+    const listing = snapshot.listings[dir] ?? []
+    // Folders before files and by name within each group, as the listing already sorts them.
+    const entries = [
+      ...listing.filter(entry => edited.has(pathOf(entry.name))),
+      ...listing.filter(entry => !edited.has(pathOf(entry.name))),
+    ]
     const isKept = (entry: TreeEntry, index: number): boolean => {
       const path = pathOf(entry.name)
       return index < maxPerDir || touches.has(path) || focus?.path === path || (entry.isDir && open.has(path))

@@ -81,7 +81,7 @@ describe('git parsing', () => {
 describe('tree rows', () => {
   test('only folders on the way to a touched file open; badges roll up', async () => {
     const rows = treeRows({ snapshot: snapshot(), focus: null, touched: [{ path: 'hooks/README.md' }] })
-    expect(keys(rows)).toEqual(['.git', 'docs', 'hooks', 'hooks/config.yaml', 'hooks/README.md', 'hooks/run-hook.ps1', '.gitignore', 'debug.log'])
+    expect(keys(rows)).toEqual(['hooks', 'hooks/README.md', 'hooks/config.yaml', 'hooks/run-hook.ps1', '.git', 'docs', '.gitignore', 'debug.log'])
     const hooks = rows.find(row => row.key === 'hooks')
     expect(hooks?.isOpen).toBe(true)
     expect(hooks === undefined ? '' : badgeOf(hooks)).toBe('+1 M:1')
@@ -118,8 +118,31 @@ describe('tree rows', () => {
       touched: [{ path: 'f18.ts' }],
       maxPerDir: 5,
     })
-    expect(keys(rows)).toEqual(['f00.ts', 'f01.ts', 'f02.ts', 'f03.ts', 'f04.ts', 'f18.ts', 'more:/'])
-    expect(rows.at(-1)?.name).toBe('… 14 more')
+    expect(keys(rows)).toEqual(['f18.ts', 'f00.ts', 'f01.ts', 'f02.ts', 'f03.ts', 'more:/'])
+    expect(rows.at(-1)?.name).toBe('… 15 more')
+  })
+
+  test('edited files list first, so a short window still shows them', async () => {
+    const many = Array.from({ length: 20 }, (_, index) => file(`f${String(index).padStart(2, '0')}.ts`))
+    const rows = treeRows({
+      snapshot: snapshot({ listings: { '': [dir('docs'), dir('src'), file('a.md')], src: many }, marks: {}, added: {} }),
+      focus: { path: 'src/f19.ts', kind: 'edit', since: 1 },
+      touched: [{ path: 'src/f07.ts' }, { path: 'a.md' }],
+    })
+    expect(keys(rows).slice(0, 3)).toEqual(['src', 'src/f07.ts', 'src/f19.ts'])
+    expect(keys(rows).slice(-3)).toEqual(['more:src/', 'a.md', 'docs'])
+    const shown = windowRows(rows, anchorOf(rows, [{ path: 'src/f07.ts' }, { path: 'a.md' }]), 4)
+    expect(keys(shown.rows)).toEqual(['src/f07.ts', 'src/f19.ts'])
+  })
+
+  test('an edit under .git or node_modules never moves its folder up', async () => {
+    const rows = treeRows({ snapshot: snapshot(), focus: null, touched: [{ path: '.git/hooks/x' }] })
+    expect(keys(rows)).toEqual(['.git', 'docs', 'hooks', '.gitignore', 'debug.log'])
+  })
+
+  test('a file only read keeps its place', async () => {
+    const rows = treeRows({ snapshot: snapshot(), focus: { path: 'hooks/run-hook.ps1', kind: 'read', since: 1 }, touched: [] })
+    expect(keys(rows)).toEqual(['.git', 'docs', 'hooks', 'hooks/config.yaml', 'hooks/README.md', 'hooks/run-hook.ps1', '.gitignore', 'debug.log'])
   })
 
   test('deleted files add no lines', async () => {
