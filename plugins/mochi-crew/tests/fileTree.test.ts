@@ -2,8 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { TreeEntry, TreeSnapshot } from '../types'
 import {
-  MAX_TOUCHED, anchorOf, ancestorsOf, badgeOf, expandedDirs, isInside, isMissingListing, parseGitStatus,
-  parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows,
+  MAX_TOUCHED, anchorOf, ancestorsOf, badgeOf, diskSpelling, expandedDirs, reachableFolders, isInside, isMissingListing, openFolders, parseGitStatus,
+  parseNumstat, relativeTo, reopenFor, rowParts, safeText, toEntries, toggleFolder, touch, treeLine, treeRows, windowRows,
 } from '../hooks/fileTree'
 import type { TreeRow } from '../hooks/fileTree'
 
@@ -32,6 +32,29 @@ describe('file tree paths', () => {
     expect(relativeTo('/repo', '/repo/../etc/passwd')).toBe(undefined)
     expect(relativeTo('/repo', 'a/../../x')).toBe(undefined)
     expect(relativeTo('/repo', '/repo')).toBe(undefined)
+  })
+
+  test('relativeTo reads Windows paths under a Windows root', async () => {
+    expect(relativeTo('C:\\proj', 'C:\\proj\\src\\a.ts')).toBe('src/a.ts')
+    expect(relativeTo('C:\\proj\\', 'c:/PROJ/src/a.ts')).toBe('src/a.ts')
+    expect(relativeTo('C:\\proj', 'src\\.\\a.ts')).toBe('src/a.ts')
+    expect(relativeTo('\\\\host\\share\\proj', '\\\\host\\share\\proj\\a.ts')).toBe('a.ts')
+    expect(relativeTo('C:\\proj', 'C:\\proj2\\a.ts')).toBe(undefined)
+    expect(relativeTo('C:\\proj', 'D:\\proj\\a.ts')).toBe(undefined)
+    expect(relativeTo('C:\\proj', 'C:\\proj\\..\\secret.txt')).toBe(undefined)
+    expect(relativeTo('C:\\proj', '..\\x')).toBe(undefined)
+    expect(relativeTo('C:\\proj', 'D:x')).toBe(undefined)
+    expect(relativeTo('C:\\proj', '\\other\\a.ts')).toBe(undefined)
+    // Only a Windows root splits on a backslash: elsewhere it is part of a name.
+    expect(relativeTo('/repo', '/repo/a\\b.ts')).toBe('a\\b.ts')
+  })
+
+  test('isInside reads Windows real paths, and only under a Windows root', async () => {
+    expect(isInside('C:\\proj', 'C:\\proj\\src\\a.ts')).toBe(true)
+    expect(isInside('C:\\proj', 'C:\\proj')).toBe(false)
+    expect(isInside('C:\\proj', 'C:\\project\\a.ts')).toBe(false)
+    expect(isInside('C:\\proj', 'src\\a.ts')).toBe(false)
+    expect(isInside('/repo', 'C:/repo/a.ts')).toBe(false)
   })
 
   test('isInside needs a real path strictly below the root', async () => {
@@ -143,6 +166,53 @@ describe('tree rows', () => {
   test('a file only read keeps its place', async () => {
     const rows = treeRows({ snapshot: snapshot(), focus: { path: 'hooks/run-hook.ps1', kind: 'read', since: 1 }, touched: [] })
     expect(keys(rows)).toEqual(['.git', 'docs', 'hooks', 'hooks/config.yaml', 'hooks/README.md', 'hooks/run-hook.ps1', '.gitignore', 'debug.log'])
+  })
+
+  test('a click closes an open folder and opens a closed one', async () => {
+    const toggles = toggleFolder(toggleFolder({}, 'hooks', true), 'docs', false)
+    expect(toggles).toEqual({ hooks: false, docs: true })
+    const listings = { ...snapshot().listings, docs: [file('guide.md')] }
+    const rows = treeRows({ snapshot: snapshot({ listings }), focus: null, touched: [{ path: 'hooks/README.md' }], toggles })
+    expect(rows.find(row => row.key === 'hooks')?.isOpen).toBe(false)
+    expect(keys(rows)).not.toContain('hooks/README.md')
+    expect(rows.find(row => row.key === 'docs')?.isOpen).toBe(true)
+    expect(keys(rows)).toContain('docs/guide.md')
+    expect(toggleFolder(toggles, 'hooks', false)).toEqual({ hooks: true, docs: true })
+  })
+
+  test('toggles lie over the session\'s own open folders', async () => {
+    const open = openFolders(new Set(['', 'hooks']), { hooks: false, docs: true })
+    expect([...open].sort()).toEqual(['', 'docs'])
+  })
+
+  test('an edit inside a folder closed by hand opens it again; opened ones stay', async () => {
+    const toggles = { src: false, 'src/lib': false, docs: false, notes: true }
+    expect(reopenFor(toggles, 'src/lib/a.ts')).toEqual({ docs: false, notes: true })
+    // Unchanged, the same object comes back, so the state is not rewritten.
+    expect(reopenFor(toggles, 'a.ts')).toBe(toggles)
+  })
+
+  test('only folders the tree can reach are read: a closed parent hides what it holds', async () => {
+    expect([...reachableFolders(new Set(['', 'docs', 'docs/api', 'src/lib']))].sort()).toEqual(['', 'docs', 'docs/api'])
+  })
+
+  test('closing the live file\'s folder keeps the window on that folder', async () => {
+    const listings = { '': [dir('a'), dir('b'), dir('hooks')], hooks: [file('x.ts')] }
+    const focus = { path: 'hooks/x.ts', kind: 'edit', since: 1 } as const
+    const rows = treeRows({ snapshot: snapshot({ listings, marks: {}, added: {} }), focus, touched: [], toggles: { hooks: false } })
+    expect(rows[anchorOf(rows, [], focus)]?.key).toBe('hooks')
+    expect(rows[anchorOf(rows, [{ path: 'hooks/x.ts' }])]?.key).toBe('hooks')
+  })
+
+  test('a Windows path that differs from the disk only in case takes the disk\'s spelling', async () => {
+    expect(diskSpelling('SRC/App.ts', 'src/App.ts')).toBe('src/App.ts')
+    expect(diskSpelling('src/App.ts', undefined)).toBe('src/App.ts')
+    // A link that lands elsewhere keeps the spelling the tool used.
+    expect(diskSpelling('src/link.ts', 'vendor/real.ts')).toBe('src/link.ts')
+  })
+
+  test('node_modules and .git stay shut in any case', async () => {
+    expect([...expandedDirs(['Node_Modules/pkg/a.js', '.GIT/x'])]).toEqual([''])
   })
 
   test('deleted files add no lines', async () => {

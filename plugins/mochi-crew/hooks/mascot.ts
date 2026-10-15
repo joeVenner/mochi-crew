@@ -2,7 +2,7 @@ import type { Gadget, MascotActivity, Worker } from '../types'
 import { HOME_X, idleRoutine } from './behavior'
 
 /** The last path segment, so a long absolute path fits a narrow pane. */
-export const fileName = (path: string): string => path.split('/').filter(Boolean).pop() ?? path
+export const fileName = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() ?? path
 
 const LOOKING_COMMANDS = /^(rg|grep|egrep|find|fd|ls|tree|cat|head|tail|less|wc|stat|file|which|git\s+(log|diff|status|show|blame|grep))\b/
 

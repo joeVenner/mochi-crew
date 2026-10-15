@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput } from 'claude-code'
 
-import type { Bug, CacheTotals, Care, CrewStats, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
+import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
 import { mascotXAt, settle } from './behavior'
@@ -12,9 +12,10 @@ import { FRESH_CARE, activeReaction, applyCare, careAt, feelingOf, parseCare } f
 import { MAX_VISIBLE_WORKERS, XP_PER_WORKER, hatOf, isOnStage, isRunningStatus, joinWorker, markFinished, pruneWorkers, rejoinWorker, workerCallEnded, workerCallStarted, workerEdited, workerFinished } from './crew'
 import { EMPTY_STATS, applyEdit, levelOf, parseStats } from './game'
 import { BAR_GLYPH, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, treeBudget, vitalNote } from './hud'
-import { launchersFor } from './editor'
+import type { EditorEnv, ShimEnv } from './editor'
+import { SHIM_ENV, launchersFor, shimCandidates, shimLauncher } from './editor'
 import type { TreeRow } from './fileTree'
-import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
+import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, isWindowsRoot, diskSpelling, openFolders, reachableFolders, reopenFor, toggleFolder, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
 import type { JournalEvent } from './journal'
 import { EMPTY_JOURNAL, journalLine, journalReport, record } from './journal'
 import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyCompleted } from './missions'
@@ -99,6 +100,8 @@ const treeTouched = atom({ plugin: 'mochi-crew', key: 'treeTouched' } as const, 
 const NO_TREE: TreeSnapshot | null = null
 const tree = atom({ plugin: 'mochi-crew', key: 'tree' } as const, NO_TREE)
 const isTreeOn = atom({ plugin: 'mochi-crew', key: 'isTreeOn' } as const, true)
+const NO_TOGGLES: FolderToggles = {}
+const treeToggles = atom({ plugin: 'mochi-crew', key: 'treeToggles' } as const, NO_TOGGLES)
 // Fixing a failing command is worth more than a routine edit.
 const XP_PER_SQUASH = 15
 
@@ -231,6 +234,7 @@ const loadSaved = async ($: EngineInterface): Promise<void> => {
   await update($, missions, (): readonly string[] => NO_MISSIONS)
   await update($, treeFocus, (): TreeFocus | null => NO_FOCUS)
   await update($, treeTouched, (): readonly TouchedFile[] => NOTHING_TOUCHED)
+  await update($, treeToggles, (): FolderToggles => NO_TOGGLES)
   await update($, tree, (): TreeSnapshot | null => NO_TREE)
 }
 
@@ -1034,7 +1038,8 @@ const readTree = async ($: EngineInterface): Promise<void> => {
   const root = await $.session.root()
   const focus = await read($, treeFocus)
   const touched = await read($, treeTouched)
-  const dirs = [...expandedDirs([...touched.map(file => file.path), ...(focus === null ? [] : [focus.path])])]
+  const toggles = await read($, treeToggles)
+  const dirs = reachableFolders(openFolders(expandedDirs([...touched.map(file => file.path), ...(focus === null ? [] : [focus.path])]), toggles))
   const listed = await Promise.all(dirs.map(async dir => [dir, await listFolder($, root, dir)] as const))
   // The session root may sit below the repository's top: git's paths are cut to it.
   const prefix = (await gitOutput($, root, ['rev-parse', '--show-prefix']))?.replace(/\n$/, '')
@@ -1098,7 +1103,10 @@ const treePathOf = async ($: EngineInterface, file: string): Promise<string | un
     const real = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath ?? root
     treeRoots = { root, real }
   }
-  return relativeTo(root, file) ?? relativeTo(treeRoots.real, file)
+  const relative = relativeTo(root, file) ?? relativeTo(treeRoots.real, file)
+  if (relative === undefined || !isWindowsRoot(root)) return relative
+  const real = (await $.fs.stat(file, { resolve: true }).catch(() => undefined))?.realPath
+  return diskSpelling(relative, real === undefined ? undefined : relativeTo(treeRoots.real, real))
 }
 
 /** What a call says about a file: live in the main loop now, or edited (by a worker or not). */
@@ -1117,6 +1125,7 @@ const noteTreeFile = ($: EngineInterface, file: string, { kind, isLive, agentId 
       return
     }
     const touched = isLive ? await read($, treeTouched) : await update($, treeTouched, current => touch(current, path, agentId))
+    if (kind === 'edit') await update($, treeToggles, current => reopenFor(current, path))
     if (isLive) {
       const since = await $.clock.now()
       await update($, treeFocus, (): TreeFocus | null => ({ path, kind, since }))
@@ -1127,6 +1136,44 @@ const noteTreeFile = ($: EngineInterface, file: string, { kind, isLive, agentId 
   treeNotes = treeNotes
     .then(apply)
     .catch((error: unknown) => $.ui.log(`mochi-crew: could not note a file for the tree: ${String(error)}`, { to: 'debug' }))
+}
+
+/** A click on a folder row opens or closes it; an opened folder is read from disk first. */
+const toggleTreeFolder = async ($: EngineInterface, path: string, isOpen: boolean): Promise<void> => {
+  try {
+    await update($, treeToggles, current => toggleFolder(current, path, isOpen))
+    if (!isOpen) queueTreeRefresh($)
+    $.ui.invalidate('ui.render')
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: could not toggle a folder in the tree: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+/** One way to open a file: a command, and the variables it runs with. */
+type Launch = { readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string>> }
+
+/**
+ * On Windows, VS Code's `code` (and its forks') is a `.cmd` shim, which cannot run without a
+ * shell; the launches here run what the shim would, by argument vector. Shims that are missing,
+ * of another shape, or inside the project (`npm run` puts its `node_modules\.bin` on PATH) are
+ * skipped, as is a shim whose program or script lies in the project.
+ */
+const windowsShimLaunches = async ($: EngineInterface, editors: EditorEnv, path: string, roots: readonly string[]): Promise<readonly Launch[]> => {
+  const isInProject = (file: string): boolean => roots.some(root => isInside(root, file))
+  const env: ShimEnv = {
+    ...editors,
+    PATH: await $.env.get('PATH'),
+    LOCALAPPDATA: await $.env.get('LOCALAPPDATA'),
+    ProgramFiles: await $.env.get('ProgramFiles'),
+  }
+  const launches: Launch[] = []
+  for (const shimPath of shimCandidates(env)) {
+    if (isInProject(shimPath)) continue
+    const shim = await $.fs.read(shimPath).catch(() => undefined)
+    const argv = shim === undefined ? undefined : shimLauncher(shim, shimPath, path)
+    if (argv !== undefined && !argv.slice(0, 2).some(isInProject)) launches.push({ argv, env: SHIM_ENV })
+  }
+  return launches
 }
 
 /**
@@ -1145,9 +1192,14 @@ const openInEditor = async ($: EngineInterface, path: string, surface: string): 
   const shown = safeText(relative ?? path)
   if (target === undefined || !isInside(rootReal, target)) return `Could not open ${shown}: it is not a file in this project.`
   const env = { VISUAL: await $.env.get('VISUAL'), EDITOR: await $.env.get('EDITOR') }
-  for (const argv of launchersFor(env, target)) {
+  const isWindows = isWindowsRoot(root)
+  const launches: readonly Launch[] = [
+    ...(isWindows ? await windowsShimLaunches($, env, target, [root, rootReal]) : []),
+    ...launchersFor(env, target, { isWindows }).map(argv => ({ argv })),
+  ]
+  for (const { argv, env: extraEnv } of launches) {
     try {
-      const ran = await $.process.run(argv, { timeoutMs: TREE_RUN_MS })
+      const ran = await $.process.run(argv, { timeoutMs: TREE_RUN_MS, ...(extraEnv === undefined ? {} : { env: { ...extraEnv } }) })
       if (ran.exitCode === 0) return `Opened ${shown}.`
     } catch (error: unknown) {
       // Not installed, or not a terminal session: try the next one.
@@ -1320,9 +1372,10 @@ export const register: Register = on => {
     const snapshot = isTreeShown ? await read($, tree) : null
     const focus = await read($, treeFocus)
     const touchedFiles = await read($, treeTouched)
+    const toggles = await read($, treeToggles)
     const treeSpace = snapshot !== null && !isCompact ? treeBudget(e.props.scroll.bodyRows, sceneRows, hudExtras) : 0
-    const allTreeRows = snapshot !== null && treeSpace >= MIN_TREE_ROWS ? treeRows({ snapshot, focus, touched: touchedFiles }) : null
-    const shownTree = allTreeRows === null ? null : windowRows(allTreeRows, anchorOf(allTreeRows, touchedFiles), treeSpace)
+    const allTreeRows = snapshot !== null && treeSpace >= MIN_TREE_ROWS ? treeRows({ snapshot, focus, touched: touchedFiles, toggles }) : null
+    const shownTree = allTreeRows === null ? null : windowRows(allTreeRows, anchorOf(allTreeRows, touchedFiles, focus), treeSpace)
     isTreePulsing = isTerminal && shownTree !== null && isThinking(currentTurn) && shownTree.rows.some(row => row.tone === 'active')
     const isPulseLit = !isTreePulsing || Math.floor(tick / TREE_PULSE_TICKS) % 2 === 0
     const foldedTree = isTreeShown && shownTree === null ? treeLine(focus, touchedFiles) ?? 'nothing touched yet' : null
@@ -1368,6 +1421,13 @@ export const register: Register = on => {
           <Text color={row.mark === 'D' ? THEME.alert : undefined} dimColor={row.mark !== 'D'}>{mark}</Text>
         </Text>
       )
+      if (row.kind === 'dir') {
+        return (
+          <Button key={`dir:${row.key}`} plain onPress={() => void toggleTreeFolder($, row.key, row.isOpen)}>
+            {pieces}
+          </Button>
+        )
+      }
       if (row.kind !== 'file') return <Text key={`tree:${row.key}`}>{pieces}</Text>
       return (
         <Button key={`file:${row.key}`} plain onPress={press => void pressButton($, () => openInEditor($, row.key, press.surface))}>

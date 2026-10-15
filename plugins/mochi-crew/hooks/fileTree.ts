@@ -1,4 +1,4 @@
-import type { GitMark, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot } from '../types'
+import type { FolderToggles, GitMark, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot } from '../types'
 
 /** Entries an expanded folder shows before folding the rest into a `… N more` row. */
 export const MAX_ENTRIES_PER_DIR = 12
@@ -41,18 +41,30 @@ export type TreeRow = {
   readonly activeKind?: TreeFocus['kind']
 }
 
+/** Whether a root is spelled the Windows way: a drive (`C:\`) or a share (`\\server\`). */
+export const isWindowsRoot = (root: string): boolean => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(root)
+
 /**
  * A path made relative to `root`, or undefined when it lies outside it. Absolute or relative
- * input; `.` and `..` are resolved by spelling alone, so `a/../../x` is outside.
+ * input; `.` and `..` are resolved by spelling alone, so `a/../../x` is outside. Under a Windows
+ * root, `\` separates too and the root matches in any case, as the file system does; a
+ * drive-relative part (`D:x`) is refused.
  */
 export const relativeTo = (root: string, path: string): string | undefined => {
-  const base = root.replace(/\/+$/, '')
-  const isAbsolute = path.startsWith('/')
-  if (isAbsolute && path !== base && !path.startsWith(`${base}/`)) return undefined
-  const rest = isAbsolute ? path.slice(base.length) : path
+  const isWindows = isWindowsRoot(root)
+  const slashed = (text: string): string => (isWindows ? text.replace(/\\/g, '/') : text)
+  const base = slashed(root).replace(/\/+$/, '')
+  const given = slashed(path)
+  const isAbsolute = given.startsWith('/') || (isWindows && /^[A-Za-z]:\//.test(given))
+  const head = given.slice(0, base.length)
+  const isUnderBase = (isWindows ? head.toLowerCase() === base.toLowerCase() : head === base)
+    && (given.length === base.length || given[base.length] === '/')
+  if (isAbsolute && !isUnderBase) return undefined
+  const rest = isAbsolute ? given.slice(base.length) : given
   const parts: string[] = []
   for (const part of rest.split('/')) {
     if (part === '' || part === '.') continue
+    if (isWindows && /^[A-Za-z]:/.test(part)) return undefined
     if (part === '..') {
       if (parts.length === 0) return undefined
       parts.pop()
@@ -65,8 +77,10 @@ export const relativeTo = (root: string, path: string): string | undefined => {
 
 /** Whether an already resolved real path lies strictly inside the resolved root. */
 export const isInside = (root: string, real: string): boolean => {
-  const base = root.replace(/\/+$/, '')
-  return base !== '' && real.startsWith(`${base}/`) && relativeTo(base, real) !== undefined
+  const isWindows = isWindowsRoot(root)
+  const given = isWindows ? real.replace(/\\/g, '/') : real
+  const isAbsolute = given.startsWith('/') || (isWindows && /^[A-Za-z]:\//.test(given))
+  return root.replace(/[\\/]+$/, '') !== '' && isAbsolute && relativeTo(root, real) !== undefined
 }
 
 /** The folders that hold `path`, outermost first, the root `''` included. */
@@ -75,8 +89,40 @@ export const ancestorsOf = (path: string): readonly string[] => {
   return ['', ...parts.map((_, index) => parts.slice(0, index + 1).join('/'))]
 }
 
+/** The folders drawn open: the session's own, then the person's toggles over them. */
+export const openFolders = (auto: ReadonlySet<string>, toggles: FolderToggles): ReadonlySet<string> => {
+  const open = new Set(auto)
+  for (const [path, isOpen] of Object.entries(toggles)) {
+    if (isOpen) open.add(path)
+    else open.delete(path)
+  }
+  return open
+}
+
+/** A click on a folder row: an open one closes, a closed one opens. */
+export const toggleFolder = (toggles: FolderToggles, path: string, isOpen: boolean): FolderToggles =>
+  ({ ...toggles, [path]: !isOpen })
+
+/** An edit inside a folder the person closed opens it again, so new work is never hidden. */
+export const reopenFor = (toggles: FolderToggles, path: string): FolderToggles => {
+  const holders = new Set(ancestorsOf(path))
+  const kept = Object.entries(toggles).filter(([dir, isOpen]) => isOpen || !holders.has(dir))
+  return kept.length === Object.keys(toggles).length ? toggles : Object.fromEntries(kept)
+}
+
+/** The open folders the tree can reach: each one's holders are open too, so it is drawn. */
+export const reachableFolders = (open: ReadonlySet<string>): readonly string[] =>
+  [...open].filter(dir => ancestorsOf(dir).every(holder => open.has(holder)))
+
+/**
+ * A tool's path in the disk's own spelling when the two differ only in case: Windows opens
+ * `SRC\App.ts` for `src\App.ts`, but the tree's listings and git name it the disk's way.
+ */
+export const diskSpelling = (spelled: string, onDisk: string | undefined): string =>
+  onDisk !== undefined && onDisk.toLowerCase() === spelled.toLowerCase() ? onDisk : spelled
+
 /** Whether a path may open folders: nothing under `.git` or `node_modules`. */
-const isOpenable = (path: string): boolean => !path.split('/').some(part => NEVER_OPENED.has(part))
+const isOpenable = (path: string): boolean => !path.toLowerCase().split('/').some(part => NEVER_OPENED.has(part))
 
 /** The folders to list and draw open: the root and every folder on the way to a touched or live file. */
 export const expandedDirs = (paths: readonly string[]): ReadonlySet<string> => {
@@ -175,6 +221,7 @@ export type TreeInput = {
   readonly snapshot: TreeSnapshot
   readonly focus: TreeFocus | null
   readonly touched: readonly TouchedFile[]
+  readonly toggles?: FolderToggles
   readonly maxPerDir?: number
 }
 
@@ -186,13 +233,13 @@ const editedPaths = (touched: readonly TouchedFile[], focus: TreeFocus | null): 
 
 /**
  * The tree's rows, depth first: folders on the way to a touched or live file are open, every
- * other folder closed. Each folder lists what leads to an edited file first, so the session's
+ * other folder closed, unless the person toggled it. Each folder lists what leads to an edited file first, so the session's
  * work sits at the top of the tree. A folder longer than `maxPerDir` folds its tail into one
  * `… N more` row, but never hides a touched or live file.
  */
-export const treeRows = ({ snapshot, focus, touched, maxPerDir = MAX_ENTRIES_PER_DIR }: TreeInput): readonly TreeRow[] => {
+export const treeRows = ({ snapshot, focus, touched, toggles = {}, maxPerDir = MAX_ENTRIES_PER_DIR }: TreeInput): readonly TreeRow[] => {
   const touches = touchIndex(touched)
-  const open = expandedDirs([...touches.keys(), ...(focus === null ? [] : [focus.path])])
+  const open = openFolders(expandedDirs([...touches.keys(), ...(focus === null ? [] : [focus.path])]), toggles)
   const edited = editedPaths(touched, focus)
   const totals = rollUp(snapshot)
   const rows: TreeRow[] = []
@@ -255,12 +302,21 @@ export const treeRows = ({ snapshot, focus, touched, maxPerDir = MAX_ENTRIES_PER
   return rows
 }
 
-/** The row the window centres on: the live file, else the latest touched one shown, else the top. */
-export const anchorOf = (rows: readonly TreeRow[], touched: readonly TouchedFile[]): number => {
+/**
+ * The row the window centres on: the live file, else the latest touched one shown, else the
+ * nearest shown folder holding the live or latest touched file (one closed by hand), else the top.
+ */
+export const anchorOf = (rows: readonly TreeRow[], touched: readonly TouchedFile[], focus: TreeFocus | null = null): number => {
   const active = rows.findIndex(row => row.tone === 'active')
   if (active >= 0) return active
-  for (const file of [...touched].reverse()) {
+  const latest = [...touched].reverse()
+  for (const file of latest) {
     const index = rows.findIndex(row => row.key === file.path)
+    if (index >= 0) return index
+  }
+  const holder = focus?.path ?? latest[0]?.path
+  for (const dir of holder === undefined ? [] : ancestorsOf(holder).slice(1).reverse()) {
+    const index = rows.findIndex(row => row.kind === 'dir' && row.key === dir)
     if (index >= 0) return index
   }
   return 0

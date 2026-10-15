@@ -7,6 +7,32 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-15
+
+### Added
+
+- Click a folder in the file tree to open or close it. The choice holds for the session; a new
+  edit inside a closed folder opens it again.
+
+### Changed
+
+- Clicking a file in the tree opens VS Code even when its `code` command isn't on PATH: on macOS
+  through the VS Code app, before falling back to the default text editor. On Windows, where
+  `code` is a `.cmd` script that can't run without a shell, Mochi reads the script and runs
+  `Code.exe` on VS Code's CLI the same way (also for Cursor, Windsurf, VSCodium and Insiders).
+
+### Fixed
+
+- On Windows, files Claude edits now show in the file tree, and clicking one opens it. Paths with
+  `\` separators and a drive letter were never matched to the project.
+
+### Security
+
+- On Windows, an editor's `.cmd` script is used only when it runs VS Code or one of its forks,
+  and never from inside the project (`npm run` puts `node_modules\.bin` on PATH). `$VISUAL` and
+  `$EDITOR` must be full paths there, since Windows looks for a bare name in the working folder
+  first.
+
 ## [1.2.1] - 2026-10-13
 
 ### Added

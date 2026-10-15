@@ -214,11 +214,15 @@ p: pet  f: feed  d: dance  o: outfit  s: sound  t: files
   `+N` lines added since the last commit (untracked files have no count). A folder shows its
   totals, such as `+52 M:2`. Files inside a folder git has never seen get no badge until one of
   them is added, so a large vendored folder costs nothing.
+- **Click a folder to open or close it.** Your choice holds for the session, except that a
+  new edit inside a folder you closed opens it again, so fresh work is never hidden.
 - **Click a file to open it in your editor.** `$VISUAL` or `$EDITOR` is used when it names a
-  windowed editor (VS Code, Cursor, Windsurf, Zed, Sublime, JetBrains). Otherwise the file opens
-  with `code`, then in macOS's default text editor. A file is never handed to the system opener,
-  which could run it (a `.command` file, say). Terminal editors such as vim are never started,
-  since the pane has no terminal to give them.
+  windowed editor (VS Code, Cursor, Windsurf, Zed, Sublime, JetBrains). Otherwise it opens in VS
+  Code: with `code`, or on macOS the VS Code app itself when `code` isn't on your PATH. On
+  Windows, VS Code's `code.cmd` needs a shell, so Mochi runs what it runs, `Code.exe` on its
+  CLI script, directly. Without VS Code, macOS's default text editor opens it. A file is
+  never handed to the system opener, which could run it (a `.command` file, say). Terminal
+  editors such as vim are never started, since the pane has no terminal to give them.
 
 The tree takes only the rows the rest of the HUD leaves. In a short pane it folds into one line,
 such as `files   editing hooks/fileTree.ts`. Turn it off with `t`, the `files` button, or
