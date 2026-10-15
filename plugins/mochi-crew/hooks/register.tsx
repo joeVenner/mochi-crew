@@ -15,7 +15,7 @@ import { BAR_GLYPH, barCells, barWidthFor, column, comboBadge, crewSummary, gutt
 import type { EditorEnv, ShimEnv } from './editor'
 import { SHIM_ENV, launchersFor, shimCandidates, shimLauncher } from './editor'
 import type { TreeRow } from './fileTree'
-import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, isWindowsRoot, openFolders, reopenFor, toggleFolder, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
+import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, isWindowsRoot, diskSpelling, openFolders, reachableFolders, reopenFor, toggleFolder, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
 import type { JournalEvent } from './journal'
 import { EMPTY_JOURNAL, journalLine, journalReport, record } from './journal'
 import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyCompleted } from './missions'
@@ -1039,7 +1039,7 @@ const readTree = async ($: EngineInterface): Promise<void> => {
   const focus = await read($, treeFocus)
   const touched = await read($, treeTouched)
   const toggles = await read($, treeToggles)
-  const dirs = [...openFolders(expandedDirs([...touched.map(file => file.path), ...(focus === null ? [] : [focus.path])]), toggles)]
+  const dirs = reachableFolders(openFolders(expandedDirs([...touched.map(file => file.path), ...(focus === null ? [] : [focus.path])]), toggles))
   const listed = await Promise.all(dirs.map(async dir => [dir, await listFolder($, root, dir)] as const))
   // The session root may sit below the repository's top: git's paths are cut to it.
   const prefix = (await gitOutput($, root, ['rev-parse', '--show-prefix']))?.replace(/\n$/, '')
@@ -1103,7 +1103,10 @@ const treePathOf = async ($: EngineInterface, file: string): Promise<string | un
     const real = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath ?? root
     treeRoots = { root, real }
   }
-  return relativeTo(root, file) ?? relativeTo(treeRoots.real, file)
+  const relative = relativeTo(root, file) ?? relativeTo(treeRoots.real, file)
+  if (relative === undefined || !isWindowsRoot(root)) return relative
+  const real = (await $.fs.stat(file, { resolve: true }).catch(() => undefined))?.realPath
+  return diskSpelling(relative, real === undefined ? undefined : relativeTo(treeRoots.real, real))
 }
 
 /** What a call says about a file: live in the main loop now, or edited (by a worker or not). */
@@ -1372,7 +1375,7 @@ export const register: Register = on => {
     const toggles = await read($, treeToggles)
     const treeSpace = snapshot !== null && !isCompact ? treeBudget(e.props.scroll.bodyRows, sceneRows, hudExtras) : 0
     const allTreeRows = snapshot !== null && treeSpace >= MIN_TREE_ROWS ? treeRows({ snapshot, focus, touched: touchedFiles, toggles }) : null
-    const shownTree = allTreeRows === null ? null : windowRows(allTreeRows, anchorOf(allTreeRows, touchedFiles), treeSpace)
+    const shownTree = allTreeRows === null ? null : windowRows(allTreeRows, anchorOf(allTreeRows, touchedFiles, focus), treeSpace)
     isTreePulsing = isTerminal && shownTree !== null && isThinking(currentTurn) && shownTree.rows.some(row => row.tone === 'active')
     const isPulseLit = !isTreePulsing || Math.floor(tick / TREE_PULSE_TICKS) % 2 === 0
     const foldedTree = isTreeShown && shownTree === null ? treeLine(focus, touchedFiles) ?? 'nothing touched yet' : null

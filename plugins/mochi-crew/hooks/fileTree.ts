@@ -106,11 +106,23 @@ export const toggleFolder = (toggles: FolderToggles, path: string, isOpen: boole
 /** An edit inside a folder the person closed opens it again, so new work is never hidden. */
 export const reopenFor = (toggles: FolderToggles, path: string): FolderToggles => {
   const holders = new Set(ancestorsOf(path))
-  return Object.fromEntries(Object.entries(toggles).filter(([dir, isOpen]) => isOpen || !holders.has(dir)))
+  const kept = Object.entries(toggles).filter(([dir, isOpen]) => isOpen || !holders.has(dir))
+  return kept.length === Object.keys(toggles).length ? toggles : Object.fromEntries(kept)
 }
 
+/** The open folders the tree can reach: each one's holders are open too, so it is drawn. */
+export const reachableFolders = (open: ReadonlySet<string>): readonly string[] =>
+  [...open].filter(dir => ancestorsOf(dir).every(holder => open.has(holder)))
+
+/**
+ * A tool's path in the disk's own spelling when the two differ only in case: Windows opens
+ * `SRC\App.ts` for `src\App.ts`, but the tree's listings and git name it the disk's way.
+ */
+export const diskSpelling = (spelled: string, onDisk: string | undefined): string =>
+  onDisk !== undefined && onDisk.toLowerCase() === spelled.toLowerCase() ? onDisk : spelled
+
 /** Whether a path may open folders: nothing under `.git` or `node_modules`. */
-const isOpenable = (path: string): boolean => !path.split('/').some(part => NEVER_OPENED.has(part))
+const isOpenable = (path: string): boolean => !path.toLowerCase().split('/').some(part => NEVER_OPENED.has(part))
 
 /** The folders to list and draw open: the root and every folder on the way to a touched or live file. */
 export const expandedDirs = (paths: readonly string[]): ReadonlySet<string> => {
@@ -290,12 +302,21 @@ export const treeRows = ({ snapshot, focus, touched, toggles = {}, maxPerDir = M
   return rows
 }
 
-/** The row the window centres on: the live file, else the latest touched one shown, else the top. */
-export const anchorOf = (rows: readonly TreeRow[], touched: readonly TouchedFile[]): number => {
+/**
+ * The row the window centres on: the live file, else the latest touched one shown, else the
+ * nearest shown folder holding the live or latest touched file (one closed by hand), else the top.
+ */
+export const anchorOf = (rows: readonly TreeRow[], touched: readonly TouchedFile[], focus: TreeFocus | null = null): number => {
   const active = rows.findIndex(row => row.tone === 'active')
   if (active >= 0) return active
-  for (const file of [...touched].reverse()) {
+  const latest = [...touched].reverse()
+  for (const file of latest) {
     const index = rows.findIndex(row => row.key === file.path)
+    if (index >= 0) return index
+  }
+  const holder = focus?.path ?? latest[0]?.path
+  for (const dir of holder === undefined ? [] : ancestorsOf(holder).slice(1).reverse()) {
+    const index = rows.findIndex(row => row.kind === 'dir' && row.key === dir)
     if (index >= 0) return index
   }
   return 0

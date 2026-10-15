@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { TreeEntry, TreeSnapshot } from '../types'
 import {
-  MAX_TOUCHED, anchorOf, ancestorsOf, badgeOf, expandedDirs, isInside, isMissingListing, openFolders, parseGitStatus,
+  MAX_TOUCHED, anchorOf, ancestorsOf, badgeOf, diskSpelling, expandedDirs, reachableFolders, isInside, isMissingListing, openFolders, parseGitStatus,
   parseNumstat, relativeTo, reopenFor, rowParts, safeText, toEntries, toggleFolder, touch, treeLine, treeRows, windowRows,
 } from '../hooks/fileTree'
 import type { TreeRow } from '../hooks/fileTree'
@@ -188,7 +188,31 @@ describe('tree rows', () => {
   test('an edit inside a folder closed by hand opens it again; opened ones stay', async () => {
     const toggles = { src: false, 'src/lib': false, docs: false, notes: true }
     expect(reopenFor(toggles, 'src/lib/a.ts')).toEqual({ docs: false, notes: true })
-    expect(reopenFor(toggles, 'a.ts')).toEqual(toggles)
+    // Unchanged, the same object comes back, so the state is not rewritten.
+    expect(reopenFor(toggles, 'a.ts')).toBe(toggles)
+  })
+
+  test('only folders the tree can reach are read: a closed parent hides what it holds', async () => {
+    expect([...reachableFolders(new Set(['', 'docs', 'docs/api', 'src/lib']))].sort()).toEqual(['', 'docs', 'docs/api'])
+  })
+
+  test('closing the live file\'s folder keeps the window on that folder', async () => {
+    const listings = { '': [dir('a'), dir('b'), dir('hooks')], hooks: [file('x.ts')] }
+    const focus = { path: 'hooks/x.ts', kind: 'edit', since: 1 } as const
+    const rows = treeRows({ snapshot: snapshot({ listings, marks: {}, added: {} }), focus, touched: [], toggles: { hooks: false } })
+    expect(rows[anchorOf(rows, [], focus)]?.key).toBe('hooks')
+    expect(rows[anchorOf(rows, [{ path: 'hooks/x.ts' }])]?.key).toBe('hooks')
+  })
+
+  test('a Windows path that differs from the disk only in case takes the disk\'s spelling', async () => {
+    expect(diskSpelling('SRC/App.ts', 'src/App.ts')).toBe('src/App.ts')
+    expect(diskSpelling('src/App.ts', undefined)).toBe('src/App.ts')
+    // A link that lands elsewhere keeps the spelling the tool used.
+    expect(diskSpelling('src/link.ts', 'vendor/real.ts')).toBe('src/link.ts')
+  })
+
+  test('node_modules and .git stay shut in any case', async () => {
+    expect([...expandedDirs(['Node_Modules/pkg/a.js', '.GIT/x'])]).toEqual([''])
   })
 
   test('deleted files add no lines', async () => {
