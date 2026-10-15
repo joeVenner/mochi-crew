@@ -41,18 +41,30 @@ export type TreeRow = {
   readonly activeKind?: TreeFocus['kind']
 }
 
+/** Whether a root is spelled the Windows way: a drive (`C:\`) or a share (`\\server\`). */
+export const isWindowsRoot = (root: string): boolean => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(root)
+
 /**
  * A path made relative to `root`, or undefined when it lies outside it. Absolute or relative
- * input; `.` and `..` are resolved by spelling alone, so `a/../../x` is outside.
+ * input; `.` and `..` are resolved by spelling alone, so `a/../../x` is outside. Under a Windows
+ * root, `\` separates too and the root matches in any case, as the file system does; a
+ * drive-relative part (`D:x`) is refused.
  */
 export const relativeTo = (root: string, path: string): string | undefined => {
-  const base = root.replace(/\/+$/, '')
-  const isAbsolute = path.startsWith('/')
-  if (isAbsolute && path !== base && !path.startsWith(`${base}/`)) return undefined
-  const rest = isAbsolute ? path.slice(base.length) : path
+  const isWindows = isWindowsRoot(root)
+  const slashed = (text: string): string => (isWindows ? text.replace(/\\/g, '/') : text)
+  const base = slashed(root).replace(/\/+$/, '')
+  const given = slashed(path)
+  const isAbsolute = given.startsWith('/') || (isWindows && /^[A-Za-z]:\//.test(given))
+  const head = given.slice(0, base.length)
+  const isUnderBase = (isWindows ? head.toLowerCase() === base.toLowerCase() : head === base)
+    && (given.length === base.length || given[base.length] === '/')
+  if (isAbsolute && !isUnderBase) return undefined
+  const rest = isAbsolute ? given.slice(base.length) : given
   const parts: string[] = []
   for (const part of rest.split('/')) {
     if (part === '' || part === '.') continue
+    if (isWindows && /^[A-Za-z]:/.test(part)) return undefined
     if (part === '..') {
       if (parts.length === 0) return undefined
       parts.pop()
@@ -65,8 +77,10 @@ export const relativeTo = (root: string, path: string): string | undefined => {
 
 /** Whether an already resolved real path lies strictly inside the resolved root. */
 export const isInside = (root: string, real: string): boolean => {
-  const base = root.replace(/\/+$/, '')
-  return base !== '' && real.startsWith(`${base}/`) && relativeTo(base, real) !== undefined
+  const isWindows = isWindowsRoot(root)
+  const given = isWindows ? real.replace(/\\/g, '/') : real
+  const isAbsolute = given.startsWith('/') || (isWindows && /^[A-Za-z]:\//.test(given))
+  return root.replace(/[\\/]+$/, '') !== '' && isAbsolute && relativeTo(root, real) !== undefined
 }
 
 /** The folders that hold `path`, outermost first, the root `''` included. */

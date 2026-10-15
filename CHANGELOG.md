@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, files Claude edits now show in the file tree, and clicking one opens it. Paths with
+  `\` separators and a drive letter were never matched to the project.
+
 ## [1.2.1] - 2026-10-13
 
 ### Added

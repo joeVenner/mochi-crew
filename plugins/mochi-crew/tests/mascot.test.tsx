@@ -50,6 +50,7 @@ describe('labels', () => {
     expect(fileName('/a/b/register.tsx')).toBe('register.tsx')
     expect(fileName('notes.md')).toBe('notes.md')
     expect(fileName('/a/b/')).toBe('b')
+    expect(fileName('C:\\proj\\src\\register.tsx')).toBe('register.tsx')
   })
 
   test('activityLabel covers every activity', async () => {

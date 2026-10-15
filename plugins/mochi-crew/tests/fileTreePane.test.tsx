@@ -39,13 +39,16 @@ type Disk = {
 
 /**
  * The project as the engine would answer for it: a repo at /repo with one changed file. `realPaths`
- * overrides where a path resolves, to stand in for a symbolic link.
+ * overrides where a path resolves, to stand in for a symbolic link; `root` spells the repo another
+ * way (a Windows drive), its listings the same.
  */
-const project = (on: On, realPaths: Readonly<Record<string, string>> = {}): Disk => {
+const project = (on: On, realPaths: Readonly<Record<string, string>> = {}, root = '/repo'): Disk => {
   const disk: Disk = { runs: [], toasts: [], isGitStuck: false }
-  on('session.root', () => ({ value: '/repo' }))
+  // A macOS test host reads a `C:\` path as relative and puts its own folder in front.
+  const listingOf = (path: string) => LISTINGS[`/repo${path.slice(path.indexOf(root) + root.length).replace(/\\/g, '/')}`] ?? []
+  on('session.root', () => ({ value: root }))
   on('env.get', () => ({ value: undefined }))
-  on('fs.list', ($, e) => ({ value: LISTINGS[e.path] ?? [] }))
+  on('fs.list', ($, e) => ({ value: listingOf(e.path) }))
   on('fs.stat', ($, e) => ({ value: { kind: 'file', size: 0, mtimeMs: 0, isLink: false, realPath: realPaths[e.path] ?? e.path } as never }))
   on('process.run', ($, e) => {
     disk.runs.push([...e.argv])
@@ -90,6 +93,24 @@ describe('file tree pane', () => {
     // A press resolves once the work its onPress left running is done.
     expect(disk.toasts).toContain('Opened hooks/README.md.')
     expect(disk.runs).toContainEqual(['code', '-g', '/repo/hooks/README.md'])
+    await ui.unmount()
+  })
+
+  test('on Windows, an edit shows in the tree and a click opens it', async ($, on) => {
+    mock.clock(on)
+    mock.store(on)
+    const disk = project(on, {}, 'C:\\repo')
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: paneProps() })
+
+    await $.tool.call({ tool: 'Edit', file_path: 'C:\\repo\\hooks\\README.md', old_string: 'a', new_string: 'b' })
+
+    await shows(ui, 'repo')
+    await shows(ui, 'config.yaml')
+    await shows(ui, 'README.md')
+    await shows(ui, 'M:1')
+
+    await ui.press({ key: 'file:hooks/README.md' })
+    expect(disk.toasts).toContain('Opened hooks/README.md.')
     await ui.unmount()
   })
 

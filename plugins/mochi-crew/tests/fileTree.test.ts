@@ -34,6 +34,29 @@ describe('file tree paths', () => {
     expect(relativeTo('/repo', '/repo')).toBe(undefined)
   })
 
+  test('relativeTo reads Windows paths under a Windows root', async () => {
+    expect(relativeTo('C:\\proj', 'C:\\proj\\src\\a.ts')).toBe('src/a.ts')
+    expect(relativeTo('C:\\proj\\', 'c:/PROJ/src/a.ts')).toBe('src/a.ts')
+    expect(relativeTo('C:\\proj', 'src\\.\\a.ts')).toBe('src/a.ts')
+    expect(relativeTo('\\\\host\\share\\proj', '\\\\host\\share\\proj\\a.ts')).toBe('a.ts')
+    expect(relativeTo('C:\\proj', 'C:\\proj2\\a.ts')).toBe(undefined)
+    expect(relativeTo('C:\\proj', 'D:\\proj\\a.ts')).toBe(undefined)
+    expect(relativeTo('C:\\proj', 'C:\\proj\\..\\secret.txt')).toBe(undefined)
+    expect(relativeTo('C:\\proj', '..\\x')).toBe(undefined)
+    expect(relativeTo('C:\\proj', 'D:x')).toBe(undefined)
+    expect(relativeTo('C:\\proj', '\\other\\a.ts')).toBe(undefined)
+    // Only a Windows root splits on a backslash: elsewhere it is part of a name.
+    expect(relativeTo('/repo', '/repo/a\\b.ts')).toBe('a\\b.ts')
+  })
+
+  test('isInside reads Windows real paths, and only under a Windows root', async () => {
+    expect(isInside('C:\\proj', 'C:\\proj\\src\\a.ts')).toBe(true)
+    expect(isInside('C:\\proj', 'C:\\proj')).toBe(false)
+    expect(isInside('C:\\proj', 'C:\\project\\a.ts')).toBe(false)
+    expect(isInside('C:\\proj', 'src\\a.ts')).toBe(false)
+    expect(isInside('/repo', 'C:/repo/a.ts')).toBe(false)
+  })
+
   test('isInside needs a real path strictly below the root', async () => {
     expect(isInside('/repo', '/repo/a/b.ts')).toBe(true)
     expect(isInside('/repo', '/repo')).toBe(false)
