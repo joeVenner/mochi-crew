@@ -52,8 +52,10 @@ export const launchersFor = (env: EditorEnv, path: string, { isWindows = false }
     const flags = program !== undefined && Object.hasOwn(GUI_EDITORS, program) ? GUI_EDITORS[program] : undefined
     const executable = value.trim().split(/\s+/)[0]
     // A bare name (found on PATH) or an absolute path; a relative one could pick up a project file.
-    const isPlaced = executable !== undefined
-      && (executable.startsWith('/') || /^[A-Za-z]:\\/.test(executable) || !/[\\/]/.test(executable))
+    // Windows looks for a bare name in the working folder first, so there it must be absolute.
+    const isPlaced = executable !== undefined && (isWindows
+      ? /^[A-Za-z]:\\/.test(executable)
+      : executable.startsWith('/') || !/[\\/]/.test(executable))
     if (flags === undefined || executable === undefined || !isPlaced) continue
     chosen.push([executable, ...flags])
   }
@@ -73,16 +75,30 @@ export type ShimEnv = EditorEnv & { readonly PATH?: string; readonly LOCALAPPDAT
 
 /** VS Code and its forks: on Windows each ships a `bin\<name>.cmd` shim around its CLI script. */
 const SHIM_EDITORS: readonly string[] = ['code', 'code-insiders', 'codium', 'cursor', 'windsurf']
+/** The programs those shims run, by file name: a shim naming any other `.exe` is refused. */
+const SHIM_PROGRAMS: ReadonlySet<string> = new Set(['code.exe', 'code - insiders.exe', 'vscodium.exe', 'cursor.exe', 'windsurf.exe'])
 
 /** The variables a shim sets for the run: its CLI script runs under Electron as plain Node. */
 export const SHIM_ENV: Readonly<Record<string, string>> = { ELECTRON_RUN_AS_NODE: '1', VSCODE_DEV: '' }
 
 const isDrivePath = (path: string): boolean => /^[A-Za-z]:\\/.test(path)
 
+/** A Windows drive path with `.` and `..` resolved by spelling, or undefined if `..` climbs past the drive. */
+const resolvedWindowsPath = (path: string): string | undefined => {
+  const [drive, ...rest] = path.split('\\')
+  const parts: string[] = []
+  for (const part of rest) {
+    if (part === '' || part === '.') continue
+    if (part !== '..') parts.push(part)
+    else if (parts.pop() === undefined) return undefined
+  }
+  return [drive, ...parts].join('\\')
+}
+
 /**
- * The `.cmd` shims to look for on Windows, in order: the editors $VISUAL and $EDITOR name, then
- * VS Code, each in every absolute PATH folder, then VS Code's default install folders. A
- * relative PATH entry is skipped, so a shim planted in the project is never read.
+ * The `.cmd` shims to look for on Windows, in order: the editors $VISUAL and $EDITOR name, in
+ * every absolute PATH folder, then VS Code, in its default install folders first and then on
+ * PATH. A relative PATH entry is skipped, so a shim planted in the project is never read.
  */
 export const shimCandidates = (env: ShimEnv): readonly string[] => {
   const named = [env.VISUAL, env.EDITOR].map(value => (value === undefined ? undefined : programOf(value)))
@@ -92,15 +108,16 @@ export const shimCandidates = (env: ShimEnv): readonly string[] => {
     env.LOCALAPPDATA === undefined ? undefined : `${env.LOCALAPPDATA}\\Programs\\Microsoft VS Code\\bin`,
     env.ProgramFiles === undefined ? undefined : `${env.ProgramFiles}\\Microsoft VS Code\\bin`,
   ].filter((dir): dir is string => dir !== undefined && isDrivePath(dir))
-  const candidates = programs.flatMap(program => [...pathDirs, ...(program === 'code' ? vsCodeDirs : [])]
+  const candidates = programs.flatMap(program => (program === 'code' ? [...vsCodeDirs, ...pathDirs] : pathDirs)
     .map(dir => `${dir.replace(/\\+$/, '')}\\${program}.cmd`))
   return [...new Set(candidates)]
 }
 
 /**
  * What a VS Code-style shim runs, as an argument vector that opens `path`: its `.exe` on its
- * `cli.js`, `%~dp0` filled in with the shim's folder. Undefined for any other shape, or when
- * a path is left unresolved or relative, so an odd `.cmd` is never guessed at.
+ * `cli.js`, `%~dp0` filled in with the shim's folder and `..` resolved. Undefined for any other
+ * shape, when a path is left unresolved or relative, or when the `.exe` is not VS Code or one of
+ * its forks, so an odd or planted `.cmd` never runs a program of its choosing.
  */
 export const shimLauncher = (shim: string, shimPath: string, path: string): readonly string[] | undefined => {
   const binDir = shimPath.slice(0, shimPath.lastIndexOf('\\') + 1)
@@ -109,7 +126,10 @@ export const shimLauncher = (shim: string, shimPath: string, path: string): read
   const quoted = [...line.matchAll(/"([^"]*)"/g)].map(match => (match[1] ?? '').replaceAll('%~dp0', binDir))
   const [program, script] = quoted
   if (program === undefined || script === undefined) return undefined
-  const isResolved = (text: string): boolean => isDrivePath(text) && !text.includes('%')
-  if (!isResolved(program) || !isResolved(script) || !/\.exe$/i.test(program) || !/cli\.js$/i.test(script)) return undefined
-  return [program, script, '-g', path]
+  const resolve = (text: string): string | undefined =>
+    (isDrivePath(text) && !text.includes('%') ? resolvedWindowsPath(text) : undefined)
+  const [exe, cli] = [resolve(program), resolve(script)]
+  if (exe === undefined || cli === undefined || !/\\cli\.js$/i.test(cli)) return undefined
+  if (!SHIM_PROGRAMS.has(exe.slice(exe.lastIndexOf('\\') + 1).toLowerCase())) return undefined
+  return [exe, cli, '-g', path]
 }

@@ -1151,10 +1151,12 @@ type Launch = { readonly argv: readonly string[]; readonly env?: Readonly<Record
 
 /**
  * On Windows, VS Code's `code` (and its forks') is a `.cmd` shim, which cannot run without a
- * shell; the launches here run what the shim would, by argument vector. Shims that are missing
- * or of another shape are skipped.
+ * shell; the launches here run what the shim would, by argument vector. Shims that are missing,
+ * of another shape, or inside the project (`npm run` puts its `node_modules\.bin` on PATH) are
+ * skipped, as is a shim whose program or script lies in the project.
  */
-const windowsShimLaunches = async ($: EngineInterface, editors: EditorEnv, path: string): Promise<readonly Launch[]> => {
+const windowsShimLaunches = async ($: EngineInterface, editors: EditorEnv, path: string, roots: readonly string[]): Promise<readonly Launch[]> => {
+  const isInProject = (file: string): boolean => roots.some(root => isInside(root, file))
   const env: ShimEnv = {
     ...editors,
     PATH: await $.env.get('PATH'),
@@ -1163,9 +1165,10 @@ const windowsShimLaunches = async ($: EngineInterface, editors: EditorEnv, path:
   }
   const launches: Launch[] = []
   for (const shimPath of shimCandidates(env)) {
+    if (isInProject(shimPath)) continue
     const shim = await $.fs.read(shimPath).catch(() => undefined)
     const argv = shim === undefined ? undefined : shimLauncher(shim, shimPath, path)
-    if (argv !== undefined) launches.push({ argv, env: SHIM_ENV })
+    if (argv !== undefined && !argv.slice(0, 2).some(isInProject)) launches.push({ argv, env: SHIM_ENV })
   }
   return launches
 }
@@ -1188,7 +1191,7 @@ const openInEditor = async ($: EngineInterface, path: string, surface: string): 
   const env = { VISUAL: await $.env.get('VISUAL'), EDITOR: await $.env.get('EDITOR') }
   const isWindows = isWindowsRoot(root)
   const launches: readonly Launch[] = [
-    ...(isWindows ? await windowsShimLaunches($, env, target) : []),
+    ...(isWindows ? await windowsShimLaunches($, env, target, [root, rootReal]) : []),
     ...launchersFor(env, target, { isWindows }).map(argv => ({ argv })),
   ]
   for (const { argv, env: extraEnv } of launches) {

@@ -65,6 +65,10 @@ describe('editor launchers on Windows', () => {
     expect(launchersFor({ VISUAL: 'C:\\Tools\\zed.exe' }, WIN_FILE, { isWindows: true })).toEqual([['C:\\Tools\\zed.exe', WIN_FILE]])
   })
 
+  test('a bare editor name is never run on Windows, which looks in the working folder first', async () => {
+    expect(launchersFor({ VISUAL: 'zed', EDITOR: 'cursor' }, WIN_FILE, { isWindows: true })).toEqual([])
+  })
+
   test('shims are looked for in absolute PATH folders, then VS Code\'s install folders', async () => {
     const candidates = shimCandidates({
       VISUAL: 'cursor --wait',
@@ -74,9 +78,9 @@ describe('editor launchers on Windows', () => {
     expect(candidates).toEqual([
       'C:\\Windows\\cursor.cmd',
       'C:\\Program Files\\Microsoft VS Code\\bin\\cursor.cmd',
+      'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code.cmd',
       'C:\\Windows\\code.cmd',
       'C:\\Program Files\\Microsoft VS Code\\bin\\code.cmd',
-      'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code.cmd',
     ])
     expect(shimCandidates({ EDITOR: 'vim' })).toEqual([])
   })
@@ -84,8 +88,8 @@ describe('editor launchers on Windows', () => {
   test('a VS Code shim becomes its exe on its CLI script, the path last', async () => {
     const shimPath = 'C:\\Program Files\\Microsoft VS Code\\bin\\code.cmd'
     expect(shimLauncher(VS_CODE_SHIM, shimPath, WIN_FILE)).toEqual([
-      'C:\\Program Files\\Microsoft VS Code\\bin\\..\\Code.exe',
-      'C:\\Program Files\\Microsoft VS Code\\bin\\..\\resources\\app\\out\\cli.js',
+      'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+      'C:\\Program Files\\Microsoft VS Code\\resources\\app\\out\\cli.js',
       '-g',
       WIN_FILE,
     ])
@@ -97,5 +101,9 @@ describe('editor launchers on Windows', () => {
     expect(shimLauncher('"%APPDATA%\\x.exe" "%~dp0cli.js" %*', shimPath, WIN_FILE)).toBe(undefined)
     expect(shimLauncher('"..\\x.exe" "..\\cli.js" %*', shimPath, WIN_FILE)).toBe(undefined)
     expect(shimLauncher('"%~dp0x.bat" "%~dp0cli.js" %*', shimPath, WIN_FILE)).toBe(undefined)
+    // A planted shim naming a program of its own is refused, however it climbs to it.
+    expect(shimLauncher('"%~dp0..\\evil.exe" "%~dp0x\\cli.js" %*', shimPath, WIN_FILE)).toBe(undefined)
+    expect(shimLauncher('"%~dp0..\\..\\..\\Code.exe" "%~dp0cli.js" %*', shimPath, WIN_FILE)).toBe(undefined)
+    expect(shimLauncher('"%~dp0Code.exe" "%~dp0notcli.js" %*', shimPath, WIN_FILE)).toBe(undefined)
   })
 })

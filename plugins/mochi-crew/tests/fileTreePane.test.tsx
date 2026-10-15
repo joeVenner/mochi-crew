@@ -153,10 +153,29 @@ describe('file tree pane', () => {
     // VS Code's code.cmd needs a shell, so the plugin runs what it runs, by argument vector.
     const launched = disk.runs.filter(argv => argv[0] !== 'git')
     expect(launched.map(argv => argv.slice(0, 3))).toEqual([
-      ['C:\\VSCode\\bin\\..\\Code.exe', 'C:\\VSCode\\bin\\..\\resources\\app\\out\\cli.js', '-g'],
+      ['C:\\VSCode\\Code.exe', 'C:\\VSCode\\resources\\app\\out\\cli.js', '-g'],
     ])
     expect(launched[0]?.at(-1)?.endsWith('C:\\repo/hooks/README.md')).toBe(true)
     expect(disk.runEnvs).toEqual([{ ELECTRON_RUN_AS_NODE: '1', VSCODE_DEV: '' }])
+    await ui.unmount()
+  })
+
+  test('on Windows, a code.cmd inside the project (npm run puts node_modules\\.bin on PATH) is never read', async ($, on) => {
+    mock.clock(on)
+    mock.store(on)
+    const shim = '"%~dp0..\\..\\Code.exe" "%~dp0..\\..\\cli.js" %*\r\n'
+    const disk = project(on, {}, 'C:\\repo', {
+      env: { PATH: 'C:\\repo\\node_modules\\.bin' },
+      files: { 'C:\\repo\\node_modules\\.bin\\code.cmd': shim },
+    })
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: paneProps() })
+
+    await $.tool.call({ tool: 'Edit', file_path: 'C:\\repo\\hooks\\README.md', old_string: 'a', new_string: 'b' })
+    await shows(ui, 'README.md')
+    await ui.press({ key: 'file:hooks/README.md' })
+
+    expect(disk.runs.some(argv => argv[0] !== 'git')).toBe(false)
+    expect(disk.toasts.some(text => text.includes('no editor found'))).toBe(true)
     await ui.unmount()
   })
 
