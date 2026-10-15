@@ -1,4 +1,4 @@
-import type { GitMark, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot } from '../types'
+import type { FolderToggles, GitMark, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot } from '../types'
 
 /** Entries an expanded folder shows before folding the rest into a `… N more` row. */
 export const MAX_ENTRIES_PER_DIR = 12
@@ -87,6 +87,26 @@ export const isInside = (root: string, real: string): boolean => {
 export const ancestorsOf = (path: string): readonly string[] => {
   const parts = path.split('/').slice(0, -1)
   return ['', ...parts.map((_, index) => parts.slice(0, index + 1).join('/'))]
+}
+
+/** The folders drawn open: the session's own, then the person's toggles over them. */
+export const openFolders = (auto: ReadonlySet<string>, toggles: FolderToggles): ReadonlySet<string> => {
+  const open = new Set(auto)
+  for (const [path, isOpen] of Object.entries(toggles)) {
+    if (isOpen) open.add(path)
+    else open.delete(path)
+  }
+  return open
+}
+
+/** A click on a folder row: an open one closes, a closed one opens. */
+export const toggleFolder = (toggles: FolderToggles, path: string, isOpen: boolean): FolderToggles =>
+  ({ ...toggles, [path]: !isOpen })
+
+/** An edit inside a folder the person closed opens it again, so new work is never hidden. */
+export const reopenFor = (toggles: FolderToggles, path: string): FolderToggles => {
+  const holders = new Set(ancestorsOf(path))
+  return Object.fromEntries(Object.entries(toggles).filter(([dir, isOpen]) => isOpen || !holders.has(dir)))
 }
 
 /** Whether a path may open folders: nothing under `.git` or `node_modules`. */
@@ -189,6 +209,7 @@ export type TreeInput = {
   readonly snapshot: TreeSnapshot
   readonly focus: TreeFocus | null
   readonly touched: readonly TouchedFile[]
+  readonly toggles?: FolderToggles
   readonly maxPerDir?: number
 }
 
@@ -200,13 +221,13 @@ const editedPaths = (touched: readonly TouchedFile[], focus: TreeFocus | null): 
 
 /**
  * The tree's rows, depth first: folders on the way to a touched or live file are open, every
- * other folder closed. Each folder lists what leads to an edited file first, so the session's
+ * other folder closed, unless the person toggled it. Each folder lists what leads to an edited file first, so the session's
  * work sits at the top of the tree. A folder longer than `maxPerDir` folds its tail into one
  * `… N more` row, but never hides a touched or live file.
  */
-export const treeRows = ({ snapshot, focus, touched, maxPerDir = MAX_ENTRIES_PER_DIR }: TreeInput): readonly TreeRow[] => {
+export const treeRows = ({ snapshot, focus, touched, toggles = {}, maxPerDir = MAX_ENTRIES_PER_DIR }: TreeInput): readonly TreeRow[] => {
   const touches = touchIndex(touched)
-  const open = expandedDirs([...touches.keys(), ...(focus === null ? [] : [focus.path])])
+  const open = openFolders(expandedDirs([...touches.keys(), ...(focus === null ? [] : [focus.path])]), toggles)
   const edited = editedPaths(touched, focus)
   const totals = rollUp(snapshot)
   const rows: TreeRow[] = []

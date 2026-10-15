@@ -151,6 +151,9 @@ export type TreeFocus = { readonly path: string; readonly kind: 'edit' | 'read';
 /** A file touched this session, relative to the project root; `workerId` when a subagent touched it last. */
 export type TouchedFile = { readonly path: string; readonly workerId?: string }
 
+/** Folders the person opened or closed by hand, over the session's own: true open, false closed. */
+export type FolderToggles = Readonly<Record<string, boolean>>
+
 /** One directory entry as the file tree keeps it. */
 export type TreeEntry = { readonly name: string; readonly isDir: boolean }
 
@@ -200,6 +203,8 @@ declare module 'claude-code' {
       treeFocus: TreeFocus | null
       /** File tree: files touched this session, oldest first. */
       treeTouched: readonly TouchedFile[]
+      /** File tree: folders the person opened or closed by hand this session. */
+      treeToggles: FolderToggles
       /** File tree: the last read of disk and git, null before one. */
       tree: TreeSnapshot | null
       /** File tree: whether the section shows under the HUD (saved across sessions). */

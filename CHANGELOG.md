@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Click a folder in the file tree to open or close it. The choice holds for the session; a new
+  edit inside a closed folder opens it again.
+
 ### Changed
 
 - Clicking a file in the tree opens VS Code even when its `code` command isn't on PATH: on macOS

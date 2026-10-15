@@ -27,6 +27,7 @@ const entry = (name: string, kind: 'file' | 'dir') => ({ name, kind, size: 0, mt
 const LISTINGS: Readonly<Record<string, ReturnType<typeof entry>[]>> = {
   '/repo': [entry('.git', 'dir'), entry('docs', 'dir'), entry('hooks', 'dir'), entry('debug.log', 'file')],
   '/repo/hooks': [entry('config.yaml', 'file'), entry('README.md', 'file')],
+  '/repo/docs': [entry('guide.md', 'file')],
 }
 
 type Disk = {
@@ -105,6 +106,28 @@ describe('file tree pane', () => {
     // A press resolves once the work its onPress left running is done.
     expect(disk.toasts).toContain('Opened hooks/README.md.')
     expect(disk.runs).toContainEqual(['code', '-g', '/repo/hooks/README.md'])
+    await ui.unmount()
+  })
+
+  test('a click on a folder closes or opens it, and a new edit inside opens it again', async ($, on) => {
+    mock.clock(on)
+    mock.store(on)
+    project(on)
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: paneProps() })
+    const isShown = async (text: string) => (await ui.find({ type: 'Text', text })) !== undefined
+
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/README.md', old_string: 'a', new_string: 'b' })
+    await shows(ui, 'config.yaml')
+
+    await ui.press({ key: 'dir:hooks' })
+    expect(await isShown('config.yaml')).toBe(false)
+
+    await ui.press({ key: 'dir:docs' })
+    await shows(ui, 'guide.md')
+
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/README.md', old_string: 'b', new_string: 'c' })
+    await shows(ui, 'config.yaml')
+    await shows(ui, 'guide.md')
     await ui.unmount()
   })
 
