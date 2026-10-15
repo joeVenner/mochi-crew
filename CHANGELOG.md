@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- Clicking a file in the tree opens VS Code even when its `code` command isn't on PATH: on macOS
+  through the VS Code app, before falling back to the default text editor. On Windows, where
+  `code` is a `.cmd` script that can't run without a shell, Mochi reads the script and runs
+  `Code.exe` on VS Code's CLI the same way (also for Cursor, Windsurf, VSCodium and Insiders).
+
 ### Fixed
 
 - On Windows, files Claude edits now show in the file tree, and clicking one opens it. Paths with

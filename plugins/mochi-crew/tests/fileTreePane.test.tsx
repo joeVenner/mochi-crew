@@ -35,25 +35,37 @@ type Disk = {
   toasts: string[]
   /** Set to make git status and diff time out from now on. */
   isGitStuck: boolean
+  /** The variables each non-git command ran with, in run order. */
+  runEnvs: (Readonly<Record<string, string>> | undefined)[]
 }
+
+/** The machine around the project: its environment variables and files outside the repo. */
+type Host = { readonly env?: Readonly<Record<string, string>>; readonly files?: Readonly<Record<string, string>> }
 
 /**
  * The project as the engine would answer for it: a repo at /repo with one changed file. `realPaths`
  * overrides where a path resolves, to stand in for a symbolic link; `root` spells the repo another
- * way (a Windows drive), its listings the same.
+ * way (a Windows drive), its listings the same; `host` answers variables and reads.
  */
-const project = (on: On, realPaths: Readonly<Record<string, string>> = {}, root = '/repo'): Disk => {
-  const disk: Disk = { runs: [], toasts: [], isGitStuck: false }
+const project = (on: On, realPaths: Readonly<Record<string, string>> = {}, root = '/repo', host: Host = {}): Disk => {
+  const disk: Disk = { runs: [], toasts: [], isGitStuck: false, runEnvs: [] }
   // A macOS test host reads a `C:\` path as relative and puts its own folder in front.
   const listingOf = (path: string) => LISTINGS[`/repo${path.slice(path.indexOf(root) + root.length).replace(/\\/g, '/')}`] ?? []
   on('session.root', () => ({ value: root }))
-  on('env.get', () => ({ value: undefined }))
+  on('env.get', ($, e) => ({ value: host.env?.[e.name] }))
+  on('fs.read', ($, e) => {
+    // Matched by ending, as the listings are: a macOS host prefixes a `C:\` path.
+    const text = Object.entries(host.files ?? {}).find(([path]) => e.path.endsWith(path))?.[1]
+    if (text === undefined) throw new Error('ENOENT')
+    return { value: text as never }
+  })
   on('fs.list', ($, e) => ({ value: listingOf(e.path) }))
   on('fs.stat', ($, e) => ({ value: { kind: 'file', size: 0, mtimeMs: 0, isLink: false, realPath: realPaths[e.path] ?? e.path } as never }))
   on('process.run', ($, e) => {
     disk.runs.push([...e.argv])
     const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '' } as never })
     const [program] = e.argv
+    if (program !== 'git') disk.runEnvs.push(e.init?.env)
     const verb = e.argv.find(arg => ['rev-parse', 'status', 'diff', 'branch'].includes(arg))
     if (program !== 'git') return ok('')
     if (disk.isGitStuck && (verb === 'status' || verb === 'diff')) throw new Error('timed out')
@@ -99,7 +111,11 @@ describe('file tree pane', () => {
   test('on Windows, an edit shows in the tree and a click opens it', async ($, on) => {
     mock.clock(on)
     mock.store(on)
-    const disk = project(on, {}, 'C:\\repo')
+    const shim = '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%~dp0..\\Code.exe" "%~dp0..\\resources\\app\\out\\cli.js" %*\r\n'
+    const disk = project(on, {}, 'C:\\repo', {
+      env: { PATH: 'C:\\Windows;C:\\VSCode\\bin' },
+      files: { 'C:\\VSCode\\bin\\code.cmd': shim },
+    })
     const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: paneProps() })
 
     await $.tool.call({ tool: 'Edit', file_path: 'C:\\repo\\hooks\\README.md', old_string: 'a', new_string: 'b' })
@@ -111,6 +127,13 @@ describe('file tree pane', () => {
 
     await ui.press({ key: 'file:hooks/README.md' })
     expect(disk.toasts).toContain('Opened hooks/README.md.')
+    // VS Code's code.cmd needs a shell, so the plugin runs what it runs, by argument vector.
+    const launched = disk.runs.filter(argv => argv[0] !== 'git')
+    expect(launched.map(argv => argv.slice(0, 3))).toEqual([
+      ['C:\\VSCode\\bin\\..\\Code.exe', 'C:\\VSCode\\bin\\..\\resources\\app\\out\\cli.js', '-g'],
+    ])
+    expect(launched[0]?.at(-1)?.endsWith('C:\\repo/hooks/README.md')).toBe(true)
+    expect(disk.runEnvs).toEqual([{ ELECTRON_RUN_AS_NODE: '1', VSCODE_DEV: '' }])
     await ui.unmount()
   })
 

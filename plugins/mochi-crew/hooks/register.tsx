@@ -12,9 +12,10 @@ import { FRESH_CARE, activeReaction, applyCare, careAt, feelingOf, parseCare } f
 import { MAX_VISIBLE_WORKERS, XP_PER_WORKER, hatOf, isOnStage, isRunningStatus, joinWorker, markFinished, pruneWorkers, rejoinWorker, workerCallEnded, workerCallStarted, workerEdited, workerFinished } from './crew'
 import { EMPTY_STATS, applyEdit, levelOf, parseStats } from './game'
 import { BAR_GLYPH, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, treeBudget, vitalNote } from './hud'
-import { launchersFor } from './editor'
+import type { EditorEnv, ShimEnv } from './editor'
+import { SHIM_ENV, launchersFor, shimCandidates, shimLauncher } from './editor'
 import type { TreeRow } from './fileTree'
-import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
+import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, isWindowsRoot, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
 import type { JournalEvent } from './journal'
 import { EMPTY_JOURNAL, journalLine, journalReport, record } from './journal'
 import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyCompleted } from './missions'
@@ -1129,6 +1130,30 @@ const noteTreeFile = ($: EngineInterface, file: string, { kind, isLive, agentId 
     .catch((error: unknown) => $.ui.log(`mochi-crew: could not note a file for the tree: ${String(error)}`, { to: 'debug' }))
 }
 
+/** One way to open a file: a command, and the variables it runs with. */
+type Launch = { readonly argv: readonly string[]; readonly env?: Readonly<Record<string, string>> }
+
+/**
+ * On Windows, VS Code's `code` (and its forks') is a `.cmd` shim, which cannot run without a
+ * shell; the launches here run what the shim would, by argument vector. Shims that are missing
+ * or of another shape are skipped.
+ */
+const windowsShimLaunches = async ($: EngineInterface, editors: EditorEnv, path: string): Promise<readonly Launch[]> => {
+  const env: ShimEnv = {
+    ...editors,
+    PATH: await $.env.get('PATH'),
+    LOCALAPPDATA: await $.env.get('LOCALAPPDATA'),
+    ProgramFiles: await $.env.get('ProgramFiles'),
+  }
+  const launches: Launch[] = []
+  for (const shimPath of shimCandidates(env)) {
+    const shim = await $.fs.read(shimPath).catch(() => undefined)
+    const argv = shim === undefined ? undefined : shimLauncher(shim, shimPath, path)
+    if (argv !== undefined) launches.push({ argv, env: SHIM_ENV })
+  }
+  return launches
+}
+
 /**
  * Opens a file of the tree in the person's editor. The path must resolve inside the project;
  * only windowed editors are run, by argument vector, never through a shell.
@@ -1145,9 +1170,14 @@ const openInEditor = async ($: EngineInterface, path: string, surface: string): 
   const shown = safeText(relative ?? path)
   if (target === undefined || !isInside(rootReal, target)) return `Could not open ${shown}: it is not a file in this project.`
   const env = { VISUAL: await $.env.get('VISUAL'), EDITOR: await $.env.get('EDITOR') }
-  for (const argv of launchersFor(env, target)) {
+  const isWindows = isWindowsRoot(root)
+  const launches: readonly Launch[] = [
+    ...(isWindows ? await windowsShimLaunches($, env, target) : []),
+    ...launchersFor(env, target, { isWindows }).map(argv => ({ argv })),
+  ]
+  for (const { argv, env: extraEnv } of launches) {
     try {
-      const ran = await $.process.run(argv, { timeoutMs: TREE_RUN_MS })
+      const ran = await $.process.run(argv, { timeoutMs: TREE_RUN_MS, ...(extraEnv === undefined ? {} : { env: { ...extraEnv } }) })
       if (ran.exitCode === 0) return `Opened ${shown}.`
     } catch (error: unknown) {
       // Not installed, or not a terminal session: try the next one.
