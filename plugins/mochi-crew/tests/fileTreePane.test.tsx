@@ -28,7 +28,12 @@ const LISTINGS: Readonly<Record<string, ReturnType<typeof entry>[]>> = {
   '/repo': [entry('.git', 'dir'), entry('docs', 'dir'), entry('hooks', 'dir'), entry('debug.log', 'file')],
   '/repo/hooks': [entry('config.yaml', 'file'), entry('README.md', 'file')],
   '/repo/docs': [entry('guide.md', 'file')],
+  '/repo/.claude/worktrees/agent-1': [entry('src', 'dir'), entry('package.json', 'file')],
+  '/repo/.claude/worktrees/agent-1/src': [entry('app.ts', 'file')],
 }
+
+/** A subagent's worktree under the project, as `git worktree list --porcelain -z` names it. */
+const AGENT_WORKTREE = '/repo/.claude/worktrees/agent-1'
 
 type Disk = {
   /** Every command the plugin ran, as argv. */
@@ -40,8 +45,11 @@ type Disk = {
   runEnvs: (Readonly<Record<string, string>> | undefined)[]
 }
 
-/** The machine around the project: its environment variables and files outside the repo. */
-type Host = { readonly env?: Readonly<Record<string, string>>; readonly files?: Readonly<Record<string, string>> }
+/**
+ * The machine around the project: its environment variables and files outside the repo, and
+ * whether git lists the subagent's worktree (one changed file there).
+ */
+type Host = { readonly env?: Readonly<Record<string, string>>; readonly files?: Readonly<Record<string, string>>; readonly hasWorktree?: boolean }
 
 /**
  * The project as the engine would answer for it: a repo at /repo with one changed file. `realPaths`
@@ -67,12 +75,17 @@ const project = (on: On, realPaths: Readonly<Record<string, string>> = {}, root 
     const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '' } as never })
     const [program] = e.argv
     if (program !== 'git') disk.runEnvs.push(e.init?.env)
-    const verb = e.argv.find(arg => ['rev-parse', 'status', 'diff', 'branch'].includes(arg))
+    const verb = e.argv.find(arg => ['rev-parse', 'status', 'diff', 'branch', 'worktree'].includes(arg))
     if (program !== 'git') return ok('')
     if (disk.isGitStuck && (verb === 'status' || verb === 'diff')) throw new Error('timed out')
+    const isInWorktree = e.init?.cwd === AGENT_WORKTREE
     if (verb === 'rev-parse') return ok('\n')
-    if (verb === 'status') return ok(' M hooks/README.md\0')
-    if (verb === 'diff') return ok('1\t0\thooks/README.md\0')
+    if (verb === 'worktree') {
+      const linked = host.hasWorktree === true ? `worktree ${AGENT_WORKTREE}\0HEAD 2\0branch refs/heads/fix/agent\0\0` : ''
+      return ok(`worktree /repo\0HEAD 1\0branch refs/heads/main\0\0${linked}`)
+    }
+    if (verb === 'status') return ok(isInWorktree ? ' M src/app.ts\0' : ' M hooks/README.md\0')
+    if (verb === 'diff') return ok(isInWorktree ? '7\t0\tsrc/app.ts\0' : '1\t0\thooks/README.md\0')
     if (verb === 'branch') return ok('main\n')
     return ok('')
   })
@@ -237,6 +250,33 @@ describe('file tree pane', () => {
     await $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' })
 
     await shows(ui, 'last hooks/README.md')
+    await ui.unmount()
+  })
+
+  test('a subagent\'s worktree edit draws in its own section, badged from its own git, and opens there', async ($, on) => {
+    mock.clock(on)
+    mock.store(on)
+    const disk = project(on, {}, '/repo', { hasWorktree: true })
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...PANE, props: paneProps() })
+
+    await $.tool.call({ tool: 'Edit', file_path: `${AGENT_WORKTREE}/src/app.ts`, old_string: 'a', new_string: 'b' })
+
+    await shows(ui, 'agent-1')
+    await shows(ui, '  fix/agent')
+    await shows(ui, 'app.ts')
+    await shows(ui, 'package.json')
+    await shows(ui, '+7')
+    // Git ran in the worktree itself, not in the project.
+    expect(disk.runs.some(argv => argv.includes('status'))).toBe(true)
+
+    await ui.press({ key: `wt:${AGENT_WORKTREE}|file:src/app.ts` })
+    expect(disk.toasts).toContain('Opened agent-1: src/app.ts.')
+    expect(disk.runs).toContainEqual(['code', '-g', `${AGENT_WORKTREE}/src/app.ts`])
+
+    // Its own row closes the section.
+    await ui.press({ key: `wt:${AGENT_WORKTREE}|root:` })
+    expect(await ui.find({ type: 'Text', text: 'package.json' })).toBeUndefined()
+    await shows(ui, 'agent-1')
     await ui.unmount()
   })
 
