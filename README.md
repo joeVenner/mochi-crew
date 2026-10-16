@@ -224,6 +224,22 @@ p: pet  f: feed  d: dance  o: outfit  s: sound  t: files
   never handed to the system opener, which could run it (a `.command` file, say). Terminal
   editors such as vim are never started, since the pane has no terminal to give them.
 
+**Worktrees.** The repository's other git worktrees show as sections of their own under the
+project: a subagent's under `.claude/worktrees/`, or one you added beside the repo with
+`git worktree add ../x`. Each is one row with its branch and git's totals, read in that worktree:
+
+```
+▸ agent-a18f4a8f  fix/learn-mods-launch  +40 M:3
+▾ ui  feat/console-surface               +12 M:1
+  ▾ src
+    ● panel.tsx                          +12 M
+```
+
+A section opens when Claude or a subagent edits a file in it, and you can open or close one
+with a click. Its files appear there, not deep under `.claude/worktrees/` in the project. Up to 8
+worktrees are shown. A closed section costs one `git status`, while an open one is read like the
+project itself.
+
 The tree takes only the rows the rest of the HUD leaves. In a short pane it folds into one line,
 such as `files   editing hooks/fileTree.ts`. Turn it off with `t`, the `files` button, or
 `/mascot files off`.
@@ -265,11 +281,12 @@ Commands:
   variables by name. It asks only whether the session uses a key or a sign-in, never for the
   credential itself.
 - **Local commands, no shell.** The file tree lists folders on the way to edited files and runs
-  `git status`, `git diff --numstat` and `git branch` in the project, without taking git's index
-  lock and with the repository's fsmonitor command turned off. File names are drawn with
-  control characters masked. Clicking a file runs your
-  editor with that file's path. Commands run by argument list, never through a shell, and only
-  for files that resolve inside the project.
+  `git status`, `git diff --numstat`, `git branch` and `git worktree list` in the project (and
+  `git status` and `git diff` in its worktrees), without taking git's index lock and with the
+  repository's fsmonitor command turned off. File and branch names are drawn with control
+  characters masked. Clicking a file runs your editor with that file's path. Commands run by
+  argument list, never through a shell, and only for files that resolve inside the project or
+  inside a worktree git lists for it.
 - **Secrets are masked on screen.** Commands shown in the HUD have tokens, auth headers, URL
   credentials and secret-looking env vars or flags replaced with `••••`. This affects the display
   only; your commands run unchanged.

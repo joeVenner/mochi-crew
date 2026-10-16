@@ -145,11 +145,17 @@ export type Measure = {
 /** A file's git state as the file tree badges it: modified, added, deleted, renamed, untracked. */
 export type GitMark = 'M' | 'A' | 'D' | 'R' | '?'
 
-/** The file Claude's main loop is editing or reading right now; `path` is relative to the project root. */
-export type TreeFocus = { readonly path: string; readonly kind: 'edit' | 'read'; readonly since: number }
+/**
+ * The file Claude's main loop is editing or reading right now. `path` is relative to the project
+ * root, or to `worktree` (a linked git worktree's absolute path, as git lists it) when set.
+ */
+export type TreeFocus = { readonly path: string; readonly kind: 'edit' | 'read'; readonly since: number; readonly worktree?: string }
 
-/** A file touched this session, relative to the project root; `workerId` when a subagent touched it last. */
-export type TouchedFile = { readonly path: string; readonly workerId?: string }
+/**
+ * A file touched this session, relative to the project root, or to `worktree` when set;
+ * `workerId` when a subagent touched it last.
+ */
+export type TouchedFile = { readonly path: string; readonly workerId?: string; readonly worktree?: string }
 
 /** Folders the person opened or closed by hand, over the session's own: true open, false closed. */
 export type FolderToggles = Readonly<Record<string, boolean>>
@@ -169,6 +175,16 @@ export type TreeSnapshot = {
   readonly added: Readonly<Record<string, number>>
   /** The checked-out branch, absent outside a repository or on a detached head. */
   readonly branch?: string
+  /** The repository's other worktrees, in git's order; absent outside a repository. */
+  readonly worktrees?: readonly WorktreeSnapshot[]
+}
+
+/** A linked git worktree as the tree last read it. */
+export type WorktreeSnapshot = {
+  /** Its absolute path as `git worktree list` prints it: the key its touches and toggles carry. */
+  readonly path: string
+  /** Its own read: listings only while its section is open, badges always. */
+  readonly tree: TreeSnapshot
 }
 
 declare module 'claude-code' {
@@ -205,6 +221,8 @@ declare module 'claude-code' {
       treeTouched: readonly TouchedFile[]
       /** File tree: folders the person opened or closed by hand this session. */
       treeToggles: FolderToggles
+      /** File tree: the same per linked worktree, by its path; `''` opens or closes its section. */
+      treeWorktreeToggles: Readonly<Record<string, FolderToggles>>
       /** File tree: the last read of disk and git, null before one. */
       tree: TreeSnapshot | null
       /** File tree: whether the section shows under the HUD (saved across sessions). */

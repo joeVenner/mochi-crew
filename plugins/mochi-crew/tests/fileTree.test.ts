@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { TreeEntry, TreeSnapshot } from '../types'
+import type { TreeEntry, TreeSnapshot, WorktreeSnapshot } from '../types'
 import {
-  MAX_TOUCHED, anchorOf, ancestorsOf, badgeOf, diskSpelling, expandedDirs, reachableFolders, isInside, isMissingListing, openFolders, parseGitStatus,
-  parseNumstat, relativeTo, reopenFor, rowParts, safeText, toEntries, toggleFolder, touch, treeLine, treeRows, windowRows,
+  MAX_TOUCHED, MAX_WORKTREES, anchorOf, ancestorsOf, badgeOf, diskSpelling, expandedDirs, reachableFolders, isInside, isMissingListing,
+  isMissingWorktreeListing, isSamePath, linkedWorktrees, openFolders, parseGitStatus, parseNumstat, parseWorktreeList, placeFile,
+  relativeTo, reopenFor, reopenWorktreeFor, rowParts, safeText, sessionTreeRows, shownWorktrees, spellingsOf, toEntries, toggleFolder,
+  toggleWorktreeFolder, touch, treeLine, treeRows, windowRows, withoutMounts,
 } from '../hooks/fileTree'
 import type { TreeRow } from '../hooks/fileTree'
 
@@ -317,5 +319,161 @@ describe('safe text', () => {
     const row: TreeRow = { key: 'x\u001b[2Jy', kind: 'file', depth: 0, name: 'x\u001b[2Jy', isOpen: false, tone: 'plain', changes: 0, added: 0 }
     expect(rowParts(row, 40).name).toBe('x?[2Jy')
     expect(treeLine(null, [{ path: 'a\u0007.ts' }])).toBe('last a?.ts')
+  })
+})
+
+describe('linked worktrees', () => {
+  const AGENT = '/repo/.claude/worktrees/agent-1'
+  const SIBLING = '/work/repo-ui'
+
+  const section = (path: string, over: Partial<TreeSnapshot> = {}): WorktreeSnapshot => ({
+    path,
+    tree: {
+      rootName: path.split('/').at(-1) ?? path,
+      listings: { '': [dir('src'), file('package.json')], src: [file('a.ts'), file('b.ts')] },
+      marks: { 'src/a.ts': 'M', 'src/new.ts': '?' },
+      added: { 'src/a.ts': 4 },
+      branch: 'feat/x',
+      ...over,
+    },
+  })
+
+  test('the porcelain list: branches, detached and locked kept, bare and prunable skipped', async () => {
+    const output = [
+      'worktree /repo', 'HEAD 1', 'branch refs/heads/main', '',
+      'worktree /repo/.claude/worktrees/agent 1', 'HEAD 2', 'branch refs/heads/fix/a b', 'locked held by agent', '',
+      'worktree /work/ci', 'HEAD 3', 'detached', '',
+      'worktree /work/gone', 'HEAD 4', 'branch refs/heads/old', 'prunable gitdir file points to non-existent location', '',
+      'worktree /srv/bare.git', 'bare', '',
+      'worktree relative/odd', 'HEAD 5', '',
+    ].join('\0')
+    expect(parseWorktreeList(output)).toEqual([
+      { path: '/repo', branch: 'main' },
+      { path: '/repo/.claude/worktrees/agent 1', branch: 'fix/a b' },
+      { path: '/work/ci' },
+    ])
+    expect(parseWorktreeList('')).toEqual([])
+  })
+
+  test('the session\'s own checkout is never a section, under any spelling', async () => {
+    const entries = [{ path: '/repo' }, { path: AGENT }, { path: SIBLING }]
+    expect(linkedWorktrees(entries, ['/repo/'])).toEqual([{ path: AGENT }, { path: SIBLING }])
+    expect(linkedWorktrees([{ path: 'C:/Proj' }, { path: 'C:/proj-ui' }], ['c:\\proj'])).toEqual([{ path: 'C:/proj-ui' }])
+    expect(isSamePath('/a/b/', '/a/b')).toBe(true)
+    expect(isSamePath('/a/B', '/a/b')).toBe(false)
+  })
+
+  test('sections are capped, the ones the session worked in first', async () => {
+    const many = Array.from({ length: MAX_WORKTREES + 3 }, (_, index) => ({ path: `/w/${index}` }))
+    expect(shownWorktrees(many, [], null).length).toBe(MAX_WORKTREES)
+    const last = `/w/${MAX_WORKTREES + 2}`
+    const shown = shownWorktrees(many, [{ path: 'a.ts', worktree: last }], null)
+    expect(shown.length).toBe(MAX_WORKTREES)
+    expect(shown[0]?.path).toBe(last)
+    expect(shownWorktrees(many, [], { path: 'b.ts', kind: 'read', since: 0, worktree: '/w/9' })[0]?.path).toBe('/w/9')
+  })
+
+  test('a worktree under the root is also spelled the way the session spells the root', async () => {
+    expect(spellingsOf('/private/var/repo/.claude/worktrees/a', '/var/repo', '/private/var/repo'))
+      .toEqual(['/private/var/repo/.claude/worktrees/a', '/var/repo/.claude/worktrees/a'])
+    expect(spellingsOf(SIBLING, '/repo', '/repo')).toEqual([SIBLING])
+  })
+
+  test('a file lands in the deepest root holding it: nested and sibling worktrees win, relative paths stay home', async () => {
+    const roots = [
+      { spellings: ['/repo'] },
+      { worktree: AGENT, spellings: [AGENT] },
+      { worktree: SIBLING, spellings: [SIBLING] },
+    ]
+    expect(placeFile(roots, `${AGENT}/src/a.ts`)).toEqual({ path: 'src/a.ts', worktree: AGENT })
+    expect(placeFile(roots, `${SIBLING}/app.ts`)).toEqual({ path: 'app.ts', worktree: SIBLING })
+    expect(placeFile(roots, '/repo/hooks/a.ts')).toEqual({ path: 'hooks/a.ts' })
+    expect(placeFile(roots, 'src/a.ts')).toEqual({ path: 'src/a.ts' })
+    expect(placeFile(roots, '/elsewhere/a.ts')).toBe(undefined)
+    expect(placeFile(roots, `${AGENT}/../../../../etc/passwd`)).toBe(undefined)
+  })
+
+  test('on Windows, git\'s forward-slash path places a tool\'s backslash path', async () => {
+    const roots = [{ spellings: ['C:\\repo'] }, { worktree: 'C:/repo/.claude/worktrees/a', spellings: ['C:/repo/.claude/worktrees/a'] }]
+    expect(placeFile(roots, 'C:\\repo\\.claude\\worktrees\\a\\src\\x.ts')).toEqual({ path: 'src/x.ts', worktree: 'C:/repo/.claude/worktrees/a' })
+  })
+
+  test('a root\'s listings hide the folders other roots sit in', async () => {
+    const listings = { '': [dir('.claude'), dir('src')], '.claude': [dir('worktrees')], '.claude/worktrees': [dir('agent-1'), dir('notes')] }
+    expect(withoutMounts(listings, ['/repo'], [AGENT, SIBLING])['.claude/worktrees']).toEqual([dir('notes')])
+    expect(withoutMounts(listings, ['/repo'], [SIBLING])).toBe(listings)
+  })
+
+  test('an untouched worktree is one closed row badged from git; a touched one opens one level in', async () => {
+    const worktrees = [section(AGENT), section(SIBLING)]
+    const closed = sessionTreeRows({ snapshot: snapshot({ worktrees }), focus: null, touched: [] })
+    const headers = closed.filter(row => row.kind === 'root')
+    expect(headers.map(row => [row.name, row.isOpen, row.detail, badgeOf(row)])).toEqual([
+      ['agent-1', false, 'feat/x', '+4 M:2'],
+      ['repo-ui', false, 'feat/x', '+4 M:2'],
+    ])
+
+    const touched = [{ path: 'src/a.ts', workerId: 'w1', worktree: AGENT }]
+    const open = sessionTreeRows({ snapshot: snapshot({ worktrees }), focus: null, touched })
+    const inAgent = open.filter(row => row.worktree === AGENT)
+    expect(inAgent.map(row => [row.kind, row.key, row.depth])).toEqual([
+      ['root', '', 0], ['dir', 'src', 1], ['file', 'src/a.ts', 2], ['file', 'src/b.ts', 2], ['file', 'package.json', 1],
+    ])
+    expect(inAgent.find(row => row.key === 'src/a.ts')?.tone).toBe('worker')
+    // The main tree does not draw a worktree's touch.
+    expect(open.filter(row => row.worktree === undefined).some(row => row.tone === 'worker')).toBe(false)
+  })
+
+  test('a worktree not yet listed stays closed until its read lands', async () => {
+    const unread = section(AGENT, { listings: {} })
+    const rows = sessionTreeRows({ snapshot: snapshot({ worktrees: [unread] }), focus: null, touched: [{ path: 'src/a.ts', worktree: AGENT }] })
+    expect(rows.find(row => row.kind === 'root')?.isOpen).toBe(false)
+    expect(isMissingWorktreeListing(snapshot({ worktrees: [unread] }), AGENT, ['src/a.ts'])).toBe(true)
+    expect(isMissingWorktreeListing(snapshot({ worktrees: [section(AGENT)] }), AGENT, ['src/a.ts'])).toBe(false)
+    expect(isMissingWorktreeListing(snapshot(), AGENT, [])).toBe(true)
+    // A section closed by hand draws no listing, so it never asks for one.
+    expect(isMissingWorktreeListing(snapshot({ worktrees: [unread] }), AGENT, ['src/a.ts'], { '': false })).toBe(false)
+  })
+
+  test('the person opens and closes a section; an edit inside one closed by hand opens it again', async () => {
+    const worktrees = [section(AGENT)]
+    const opened = toggleWorktreeFolder({}, AGENT, '', false)
+    expect(sessionTreeRows({ snapshot: snapshot({ worktrees }), focus: null, touched: [], worktreeToggles: opened })
+      .some(row => row.worktree === AGENT && row.key === 'package.json')).toBe(true)
+
+    const touched = [{ path: 'src/a.ts', worktree: AGENT }]
+    const closed = toggleWorktreeFolder({}, AGENT, '', true)
+    expect(sessionTreeRows({ snapshot: snapshot({ worktrees }), focus: null, touched, worktreeToggles: closed })
+      .filter(row => row.worktree === AGENT).length).toBe(1)
+    expect(reopenWorktreeFor(closed, AGENT, 'src/a.ts')).toEqual({ [AGENT]: {} })
+    expect(reopenWorktreeFor(closed, SIBLING, 'src/a.ts')).toBe(closed)
+  })
+
+  test('the same path in two roots is two touches, and the anchor finds the right one', async () => {
+    const touched = touch(touch([], 'src/a.ts', undefined), 'src/a.ts', 'w1', AGENT)
+    expect(touched).toEqual([{ path: 'src/a.ts' }, { path: 'src/a.ts', workerId: 'w1', worktree: AGENT }])
+    const main = snapshot({
+      listings: { '': [dir('src')], src: [file('a.ts')] },
+      worktrees: [section(AGENT)],
+    })
+    const rows = sessionTreeRows({ snapshot: main, focus: null, touched })
+    const anchored = rows[anchorOf(rows, touched)]
+    expect([anchored?.key, anchored?.worktree]).toEqual(['src/a.ts', AGENT])
+    // Its section closed by hand, with nothing else touched: the anchor rests on the worktree's own row.
+    const onlyThere = touched.slice(1)
+    const closed = sessionTreeRows({ snapshot: main, focus: null, touched: onlyThere, worktreeToggles: { [AGENT]: { '': false } } })
+    expect(closed[anchorOf(closed, onlyThere)]?.kind).toBe('root')
+  })
+
+  test('the folded line and a worktree row name the worktree', async () => {
+    expect(treeLine({ path: 'src/a.ts', kind: 'edit', since: 0, worktree: AGENT }, [])).toBe('editing agent-1: src/a.ts')
+    expect(treeLine(null, [{ path: 'b.ts', worktree: 'C:\\w\\ui' }])).toBe('last ui: b.ts')
+    const header = { key: '', kind: 'root', depth: 0, name: 'agent-1', isOpen: true, tone: 'plain', changes: 2, added: 0, mark: 'M', detail: 'feature/a-very-long-branch-name-indeed' } as const
+    const parts = rowParts(header, 60)
+    expect(parts.glyph).toBe('▾ ')
+    expect(parts.badge).toBe('M:2')
+    expect([...parts.detail].length).toBe(24)
+    expect(parts.detail.endsWith('…')).toBe(true)
+    expect(rowParts({ ...header, detail: 'evil\u001b[2J' }, 60).detail).toBe('evil?[2J')
   })
 })

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput } from 'claude-code'
 
-import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
+import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
 import { mascotXAt, settle } from './behavior'
@@ -14,8 +14,8 @@ import { EMPTY_STATS, applyEdit, levelOf, parseStats } from './game'
 import { BAR_GLYPH, barCells, barWidthFor, column, comboBadge, crewSummary, gutter, hudPlan, ruleFor, treeBudget, vitalNote } from './hud'
 import type { EditorEnv, ShimEnv } from './editor'
 import { SHIM_ENV, launchersFor, shimCandidates, shimLauncher } from './editor'
-import type { TreeRow } from './fileTree'
-import { MIN_TREE_ROWS, anchorOf, expandedDirs, isInside, isMissingListing, isWindowsRoot, diskSpelling, openFolders, reachableFolders, reopenFor, toggleFolder, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, treeLine, treeRows, windowRows } from './fileTree'
+import type { TreeRoot, TreePlace, TreeRow, WorktreeEntry } from './fileTree'
+import { MIN_TREE_ROWS, anchorOf, expandedDirs, focusIn, isAbsolutePath, isInside, isMissingListing, isMissingWorktreeListing, isWindowsRoot, isWorktreeOpen, diskSpelling, linkedWorktrees, openFolders, parseWorktreeList, placeFile, placeLabel, shownWorktrees, reachableFolders, reopenFor, reopenWorktreeFor, sessionTreeRows, spellingsOf, toggleFolder, toggleWorktreeFolder, parseGitStatus, parseNumstat, relativeTo, rowParts, safeText, toEntries, touch, touchedIn, treeLine, windowRows, withoutMounts } from './fileTree'
 import type { JournalEvent } from './journal'
 import { EMPTY_JOURNAL, journalLine, journalReport, record } from './journal'
 import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyCompleted } from './missions'
@@ -102,6 +102,8 @@ const tree = atom({ plugin: 'mochi-crew', key: 'tree' } as const, NO_TREE)
 const isTreeOn = atom({ plugin: 'mochi-crew', key: 'isTreeOn' } as const, true)
 const NO_TOGGLES: FolderToggles = {}
 const treeToggles = atom({ plugin: 'mochi-crew', key: 'treeToggles' } as const, NO_TOGGLES)
+const NO_WORKTREE_TOGGLES: Readonly<Record<string, FolderToggles>> = {}
+const treeWorktreeToggles = atom({ plugin: 'mochi-crew', key: 'treeWorktreeToggles' } as const, NO_WORKTREE_TOGGLES)
 // Fixing a failing command is worth more than a routine edit.
 const XP_PER_SQUASH = 15
 
@@ -235,6 +237,7 @@ const loadSaved = async ($: EngineInterface): Promise<void> => {
   await update($, treeFocus, (): TreeFocus | null => NO_FOCUS)
   await update($, treeTouched, (): readonly TouchedFile[] => NOTHING_TOUCHED)
   await update($, treeToggles, (): FolderToggles => NO_TOGGLES)
+  await update($, treeWorktreeToggles, (): Readonly<Record<string, FolderToggles>> => NO_WORKTREE_TOGGLES)
   await update($, tree, (): TreeSnapshot | null => NO_TREE)
 }
 
@@ -1033,13 +1036,92 @@ const listFolder = async ($: EngineInterface, root: string, dir: string): Promis
   }
 }
 
-/** Reads the open folders and git's view of the project into a fresh snapshot. */
-const readTree = async ($: EngineInterface): Promise<void> => {
+// The project root as given and as it resolves: tools may report either spelling (/var vs
+// /private/var on macOS). Re-read when the root moves.
+let treeRoots: { root: string; real: string } | undefined
+// The linked worktrees as git last listed them for this root (all of them, past the drawn cap),
+// and when; `top` is the session's checkout as git names it, kept once git answered.
+let treeWorktrees: { root: string; top?: string; entries: readonly WorktreeEntry[]; at: number } | undefined
+// A file under no known worktree lists them again at most this often: a subagent's worktree is
+// made after the last read, a session's own edits must not run git each time.
+const WORKTREE_RELIST_MS = 3_000
+
+/** The session root in both spellings, read again when it moves. */
+const sessionRoots = async ($: EngineInterface): Promise<{ root: string; real: string }> => {
   const root = await $.session.root()
+  if (treeRoots?.root !== root) {
+    const real = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath ?? root
+    treeRoots = { root, real }
+  }
+  return treeRoots
+}
+
+/** Lists the repository's linked worktrees from git, never from a tool's input; none outside a repo. */
+const readWorktrees = async ($: EngineInterface): Promise<readonly WorktreeEntry[]> => {
+  const { root, real } = await sessionRoots($)
+  // Asked again until git answers: without it a session in a subfolder would draw its own checkout.
+  const known = treeWorktrees?.root === root ? treeWorktrees.top : undefined
+  const top = known ?? ((await gitOutput($, root, ['rev-parse', '--show-toplevel']))?.trim() || undefined)
+  const listed = await gitOutput($, root, ['worktree', 'list', '--porcelain', '-z'])
+  const own = [...(top === undefined ? [] : [top]), root, real]
+  const entries = listed === undefined ? [] : linkedWorktrees(parseWorktreeList(listed), own)
+  treeWorktrees = { root, ...(top === undefined ? {} : { top }), entries, at: await $.clock.now() }
+  return entries
+}
+
+/** The roots a tool's path may lie under: the session's, then each known worktree in each spelling. */
+const placeRoots = (root: string, real: string): readonly TreeRoot[] => [
+  { spellings: [root, real] },
+  ...(treeWorktrees?.root === root ? treeWorktrees.entries : [])
+    .map(entry => ({ worktree: entry.path, spellings: spellingsOf(entry.path, root, real) })),
+]
+
+/** What a section was last read with: its own touches, live file and toggles. */
+type SectionWork = {
+  readonly touched: readonly TouchedFile[]
+  readonly focus: TreeFocus | null
+  readonly toggles: FolderToggles
+  readonly previous: WorktreeSnapshot | undefined
+  /** Other roots' paths, hidden from its listings. */
+  readonly mounts: readonly string[]
+}
+
+/**
+ * Reads one linked worktree in its own root. Its badges are always read (one git call), so a
+ * closed section still says what changed there; folders and added lines only while it is open.
+ */
+const readWorktree = async ($: EngineInterface, entry: WorktreeEntry, work: SectionWork): Promise<WorktreeSnapshot> => {
+  const paths = [...work.touched.map(file => file.path), ...(work.focus === null ? [] : [work.focus.path])]
+  const isOpen = isWorktreeOpen(entry.path, work.touched, work.focus, work.toggles)
+  const dirs = isOpen ? reachableFolders(openFolders(expandedDirs(paths), work.toggles)) : []
+  const [listed, status, numstat] = await Promise.all([
+    Promise.all(dirs.map(async dir => [dir, await listFolder($, entry.path, dir)] as const)),
+    gitOutput($, entry.path, ['status', '--porcelain=v1', '-z', '--untracked-files=normal', '--', '.']),
+    isOpen ? gitOutput($, entry.path, ['diff', '--numstat', '-z', '--no-ext-diff', 'HEAD', '--', '.']) : Promise.resolve(undefined),
+  ])
+  // A git call that failed or timed out (or was not run) keeps the last badges.
+  const previous = work.previous?.tree
+  return {
+    path: entry.path,
+    tree: {
+      rootName: safeText(fileName(entry.path)),
+      listings: withoutMounts(Object.fromEntries(listed), [entry.path], work.mounts),
+      marks: status === undefined ? previous?.marks ?? {} : parseGitStatus(status),
+      added: numstat === undefined ? previous?.added ?? {} : parseNumstat(numstat),
+      ...(entry.branch === undefined ? {} : { branch: safeText(entry.branch) }),
+    },
+  }
+}
+
+/** Reads the open folders and git's view of the project and its worktrees into a fresh snapshot. */
+const readTree = async ($: EngineInterface): Promise<void> => {
+  const { root, real } = await sessionRoots($)
   const focus = await read($, treeFocus)
-  const touched = await read($, treeTouched)
+  const allTouched = await read($, treeTouched)
+  const touched = touchedIn(allTouched, undefined)
+  const ownFocus = focusIn(focus, undefined)
   const toggles = await read($, treeToggles)
-  const dirs = reachableFolders(openFolders(expandedDirs([...touched.map(file => file.path), ...(focus === null ? [] : [focus.path])]), toggles))
+  const dirs = reachableFolders(openFolders(expandedDirs([...touched.map(file => file.path), ...(ownFocus === null ? [] : [ownFocus.path])]), toggles))
   const listed = await Promise.all(dirs.map(async dir => [dir, await listFolder($, root, dir)] as const))
   // The session root may sit below the repository's top: git's paths are cut to it.
   const prefix = (await gitOutput($, root, ['rev-parse', '--show-prefix']))?.replace(/\n$/, '')
@@ -1055,12 +1137,25 @@ const readTree = async ($: EngineInterface): Promise<void> => {
   const branchName = branch?.trim()
   // A git call that failed or timed out keeps the last badges; only leaving a repo clears them.
   const previous = await read($, tree)
+  const linked = isRepo ? await readWorktrees($) : []
+  const entries = shownWorktrees(linked, allTouched, focus)
+  const top = treeWorktrees?.top
+  const own = [...(top === undefined ? [] : [top]), root, real]
+  const worktreeToggles = await read($, treeWorktreeToggles)
+  const worktrees = await Promise.all(entries.map(entry => readWorktree($, entry, {
+    touched: touchedIn(allTouched, entry.path),
+    focus: focusIn(focus, entry.path),
+    toggles: worktreeToggles[entry.path] ?? {},
+    previous: previous?.worktrees?.find(section => section.path === entry.path),
+    mounts: [...own, ...linked.filter(other => other !== entry).map(other => other.path)],
+  })))
   const snapshot: TreeSnapshot = {
     rootName: safeText(fileName(root)),
-    listings: Object.fromEntries(listed),
+    listings: withoutMounts(Object.fromEntries(listed), [root, real], linked.map(entry => entry.path)),
     marks: !isRepo ? {} : status === undefined ? previous?.marks ?? {} : parseGitStatus(status, prefix),
     added: !isRepo ? {} : numstat === undefined ? previous?.added ?? {} : parseNumstat(numstat, prefix),
     ...(branchName === undefined || branchName === '' ? {} : { branch: safeText(branchName) }),
+    ...(isRepo ? { worktrees } : {}),
   }
   await update($, tree, (): TreeSnapshot | null => snapshot)
   $.ui.invalidate('ui.render')
@@ -1092,21 +1187,29 @@ const queueTreeRefresh = ($: EngineInterface): void => {
 // File notes apply one at a time, in call order, so a quick edit then read never leaves the
 // older file live.
 let treeNotes: Promise<void> = Promise.resolve()
-// The project root as given and as it resolves: tools may report either spelling (/var vs
-// /private/var on macOS). Re-read when the root moves.
-let treeRoots: { root: string; real: string } | undefined
 
-/** A tool's path relative to the project, under either spelling of the root. */
-const treePathOf = async ($: EngineInterface, file: string): Promise<string | undefined> => {
-  const root = await $.session.root()
-  if (treeRoots?.root !== root) {
-    const real = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath ?? root
-    treeRoots = { root, real }
+/**
+ * Where a tool's path sits: in a linked worktree when one holds it (the deepest wins), else in
+ * the project, under either spelling of each root. A path under no known worktree lists them
+ * again first (throttled), since a subagent's worktree is made after the tree last read them.
+ */
+const treePlaceOf = async ($: EngineInterface, file: string): Promise<TreePlace | undefined> => {
+  const { root, real } = await sessionRoots($)
+  const isListStale = treeWorktrees?.root !== root || (await $.clock.now()) - treeWorktrees.at >= WORKTREE_RELIST_MS
+  let place = placeFile(placeRoots(root, real), file)
+  if (place?.worktree === undefined && isAbsolutePath(file) && isListStale) {
+    await readWorktrees($)
+    place = placeFile(placeRoots(root, real), file)
   }
-  const relative = relativeTo(root, file) ?? relativeTo(treeRoots.real, file)
-  if (relative === undefined || !isWindowsRoot(root)) return relative
-  const real = (await $.fs.stat(file, { resolve: true }).catch(() => undefined))?.realPath
-  return diskSpelling(relative, real === undefined ? undefined : relativeTo(treeRoots.real, real))
+  const resolved = place === undefined || isWindowsRoot(root)
+    ? (await $.fs.stat(file, { resolve: true }).catch(() => undefined))?.realPath
+    : undefined
+  // Git names worktrees by real path: a sibling given as /var/… is found as /private/var/….
+  if (place === undefined) return resolved === undefined ? undefined : placeFile(placeRoots(root, real), resolved)
+  if (!isWindowsRoot(root)) return place
+  const onDisk = resolved === undefined ? undefined : placeFile(placeRoots(root, real), resolved)
+  const path = diskSpelling(place.path, onDisk !== undefined && onDisk.worktree === place.worktree ? onDisk.path : undefined)
+  return { ...place, path }
 }
 
 /** What a call says about a file: live in the main loop now, or edited (by a worker or not). */
@@ -1119,18 +1222,27 @@ type TreeNote = { kind: TreeFocus['kind']; isLive: boolean; agentId?: string }
  */
 const noteTreeFile = ($: EngineInterface, file: string, { kind, isLive, agentId }: TreeNote): void => {
   const apply = async (): Promise<void> => {
-    const path = await treePathOf($, file)
-    if (path === undefined) {
-      $.ui.log('mochi-crew: a file outside the project is left out of the tree', { to: 'debug' })
+    const place = await treePlaceOf($, file)
+    if (place === undefined) {
+      $.ui.log('mochi-crew: a file outside the project and its worktrees is left out of the tree', { to: 'debug' })
       return
     }
-    const touched = isLive ? await read($, treeTouched) : await update($, treeTouched, current => touch(current, path, agentId))
-    if (kind === 'edit') await update($, treeToggles, current => reopenFor(current, path))
+    const { path, worktree } = place
+    const touched = isLive ? await read($, treeTouched) : await update($, treeTouched, current => touch(current, path, agentId, worktree))
+    if (kind === 'edit') {
+      if (worktree === undefined) await update($, treeToggles, current => reopenFor(current, path))
+      else await update($, treeWorktreeToggles, current => reopenWorktreeFor(current, worktree, path))
+    }
     if (isLive) {
       const since = await $.clock.now()
-      await update($, treeFocus, (): TreeFocus | null => ({ path, kind, since }))
+      await update($, treeFocus, (): TreeFocus | null => ({ path, kind, since, ...(worktree === undefined ? {} : { worktree }) }))
     }
-    if (isMissingListing(await read($, tree), [...touched.map(entry => entry.path), path])) queueTreeRefresh($)
+    const paths = [...touchedIn(touched, worktree).map(entry => entry.path), path]
+    const snapshot = await read($, tree)
+    const isMissing = worktree === undefined
+      ? isMissingListing(snapshot, paths)
+      : isMissingWorktreeListing(snapshot, worktree, paths, (await read($, treeWorktreeToggles))[worktree])
+    if (isMissing) queueTreeRefresh($)
     $.ui.invalidate('ui.render')
   }
   treeNotes = treeNotes
@@ -1138,10 +1250,14 @@ const noteTreeFile = ($: EngineInterface, file: string, { kind, isLive, agentId 
     .catch((error: unknown) => $.ui.log(`mochi-crew: could not note a file for the tree: ${String(error)}`, { to: 'debug' }))
 }
 
-/** A click on a folder row opens or closes it; an opened folder is read from disk first. */
-const toggleTreeFolder = async ($: EngineInterface, path: string, isOpen: boolean): Promise<void> => {
+/**
+ * A click on a folder row opens or closes it; an opened folder is read from disk first. In a
+ * worktree's section, `''` is the worktree's own row.
+ */
+const toggleTreeFolder = async ($: EngineInterface, worktree: string | undefined, path: string, isOpen: boolean): Promise<void> => {
   try {
-    await update($, treeToggles, current => toggleFolder(current, path, isOpen))
+    if (worktree === undefined) await update($, treeToggles, current => toggleFolder(current, path, isOpen))
+    else await update($, treeWorktreeToggles, current => toggleWorktreeFolder(current, worktree, path, isOpen))
     if (!isOpen) queueTreeRefresh($)
     $.ui.invalidate('ui.render')
   } catch (error: unknown) {
@@ -1177,24 +1293,35 @@ const windowsShimLaunches = async ($: EngineInterface, editors: EditorEnv, path:
 }
 
 /**
- * Opens a file of the tree in the person's editor. The path must resolve inside the project;
- * only windowed editors are run, by argument vector, never through a shell.
+ * Opens a file of the tree in the person's editor. The path must resolve inside the project, or
+ * inside the linked worktree it is drawn in (one git listed, as the last read kept it); only
+ * windowed editors are run, by argument vector, never through a shell.
  */
-const openInEditor = async ($: EngineInterface, path: string, surface: string): Promise<string> => {
+const openInEditor = async ($: EngineInterface, worktree: string | undefined, path: string, surface: string): Promise<string> => {
   // Commands run only from the terminal CLI; a desktop or editor surface has no host to run on.
   if (surface !== 'terminal') return 'Opening a file from the tree works in the terminal app only.'
   const root = await $.session.root()
   const rootReal = (await $.fs.stat(root, { resolve: true })).realPath ?? root
-  const relative = relativeTo(root, path)
+  const sections = (await read($, tree))?.worktrees ?? []
+  // The row's worktree only names which listed one to look in; its path is git's, not the row's.
+  const base = worktree === undefined ? root : sections.find(section => section.path === worktree)?.path
+  const baseReal = worktree === undefined ? rootReal
+    : base === undefined ? undefined
+    : (await $.fs.stat(base, { resolve: true }).catch(() => undefined))?.realPath ?? base
+  const relative = base === undefined ? undefined : relativeTo(base, path)
   const target = relative === undefined
     ? undefined
-    : (await $.fs.stat(`${root}/${relative}`, { resolve: true }).catch(() => undefined))?.realPath
-  const shown = safeText(relative ?? path)
-  if (target === undefined || !isInside(rootReal, target)) return `Could not open ${shown}: it is not a file in this project.`
+    : (await $.fs.stat(`${base}/${relative}`, { resolve: true }).catch(() => undefined))?.realPath
+  const shown = placeLabel({ path: relative ?? path, ...(worktree === undefined ? {} : { worktree }) })
+  if (target === undefined || baseReal === undefined || !isInside(baseReal, target)) return `Could not open ${shown}: it is not a file in this project.`
   const env = { VISUAL: await $.env.get('VISUAL'), EDITOR: await $.env.get('EDITOR') }
   const isWindows = isWindowsRoot(root)
+  // A shim inside the project or any of its worktrees, drawn or not, is never run; before git has
+  // listed them, no shim is.
+  const listed = treeWorktrees?.root === root ? treeWorktrees.entries : undefined
+  const projectRoots = [root, rootReal, ...(baseReal === undefined ? [] : [baseReal]), ...(listed ?? []).map(entry => entry.path)]
   const launches: readonly Launch[] = [
-    ...(isWindows ? await windowsShimLaunches($, env, target, [root, rootReal]) : []),
+    ...(isWindows && listed !== undefined ? await windowsShimLaunches($, env, target, projectRoots) : []),
     ...launchersFor(env, target, { isWindows }).map(argv => ({ argv })),
   ]
   for (const { argv, env: extraEnv } of launches) {
@@ -1373,8 +1500,11 @@ export const register: Register = on => {
     const focus = await read($, treeFocus)
     const touchedFiles = await read($, treeTouched)
     const toggles = await read($, treeToggles)
+    const worktreeToggles = await read($, treeWorktreeToggles)
     const treeSpace = snapshot !== null && !isCompact ? treeBudget(e.props.scroll.bodyRows, sceneRows, hudExtras) : 0
-    const allTreeRows = snapshot !== null && treeSpace >= MIN_TREE_ROWS ? treeRows({ snapshot, focus, touched: touchedFiles, toggles }) : null
+    const allTreeRows = snapshot !== null && treeSpace >= MIN_TREE_ROWS
+      ? sessionTreeRows({ snapshot, focus, touched: touchedFiles, toggles, worktreeToggles })
+      : null
     const shownTree = allTreeRows === null ? null : windowRows(allTreeRows, anchorOf(allTreeRows, touchedFiles, focus), treeSpace)
     isTreePulsing = isTerminal && shownTree !== null && isThinking(currentTurn) && shownTree.rows.some(row => row.tone === 'active')
     const isPulseLit = !isTreePulsing || Math.floor(tick / TREE_PULSE_TICKS) % 2 === 0
@@ -1414,23 +1544,26 @@ export const register: Register = on => {
         <Text wrap="truncate-end">
           <Text dimColor>{parts.indent}</Text>
           <Text color={glyphColor} dimColor={glyphColor === undefined}>{parts.glyph}</Text>
-          <Text color={nameColor} bold={isActive} dimColor={isDim}>{parts.name}</Text>
+          <Text color={nameColor} bold={isActive || row.kind === 'root'} dimColor={isDim}>{parts.name}</Text>
+          <Text dimColor>{parts.detail === '' ? '' : `  ${parts.detail}`}</Text>
           <Text>{gap}</Text>
           <Text color={THEME.good}>{lines}</Text>
           <Text>{lines !== '' && mark !== '' ? ' ' : ''}</Text>
           <Text color={row.mark === 'D' ? THEME.alert : undefined} dimColor={row.mark !== 'D'}>{mark}</Text>
         </Text>
       )
-      if (row.kind === 'dir') {
+      // Rows of a worktree's section carry its path in their key, so no two roots' rows collide.
+      const section = row.worktree === undefined ? '' : `wt:${row.worktree}|`
+      if (row.kind === 'dir' || row.kind === 'root') {
         return (
-          <Button key={`dir:${row.key}`} plain onPress={() => void toggleTreeFolder($, row.key, row.isOpen)}>
+          <Button key={`${section}${row.kind}:${row.key}`} plain onPress={() => void toggleTreeFolder($, row.worktree, row.key, row.isOpen)}>
             {pieces}
           </Button>
         )
       }
-      if (row.kind !== 'file') return <Text key={`tree:${row.key}`}>{pieces}</Text>
+      if (row.kind !== 'file') return <Text key={`${section}tree:${row.key}`}>{pieces}</Text>
       return (
-        <Button key={`file:${row.key}`} plain onPress={press => void pressButton($, () => openInEditor($, row.key, press.surface))}>
+        <Button key={`${section}file:${row.key}`} plain onPress={press => void pressButton($, () => openInEditor($, row.worktree, row.key, press.surface))}>
           {pieces}
         </Button>
       )

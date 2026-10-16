@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-16
+
+### Added
+
+- The file tree shows the repository's other git worktrees as sections of their own, each with
+  its branch and git's badges read in that worktree. A subagent's edits in its worktree land there,
+  not deep under `.claude/worktrees/`, and a worktree beside the repo (`git worktree add ../x`) is
+  no longer left out. A section opens when work happens in it, or with a click.
+
 ## [1.3.0] - 2026-10-15
 
 ### Added
