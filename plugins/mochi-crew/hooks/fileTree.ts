@@ -1,4 +1,5 @@
-import type { FolderToggles, GitMark, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot } from '../types'
+import type { FolderToggles, GitMark, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, WorktreeSnapshot } from '../types'
+import { fileName } from './mascot'
 
 /** Entries an expanded folder shows before folding the rest into a `… N more` row. */
 export const MAX_ENTRIES_PER_DIR = 12
@@ -6,6 +7,10 @@ export const MAX_ENTRIES_PER_DIR = 12
 export const MIN_TREE_ROWS = 4
 /** Touched files remembered; older ones fold their folders closed again. */
 export const MAX_TOUCHED = 40
+/** Linked worktrees drawn at most; past this the rest are left out. */
+export const MAX_WORKTREES = 8
+/** Branch names cut to this many cells on a worktree's row. */
+const MAX_DETAIL = 24
 /** Folders never opened, however a path inside them was touched. */
 const NEVER_OPENED: ReadonlySet<string> = new Set(['.git', 'node_modules'])
 
@@ -21,12 +26,17 @@ export type RowTone = 'active' | 'worker' | 'touched' | 'plain' | 'dim'
 
 /** One line of the drawn tree. */
 export type TreeRow = {
-  /** A stable address: the path relative to the root, or `more:<dir>` for a fold. */
+  /** A stable address within its root: the path, `more:<dir>` for a fold, `''` for a worktree's own row. */
   readonly key: string
-  readonly kind: 'dir' | 'file' | 'more'
+  /** `root` is a linked worktree's own row, which opens or closes its section. */
+  readonly kind: 'dir' | 'file' | 'more' | 'root'
   readonly depth: number
-  /** The entry's name, or `… N more` for a fold. */
+  /** The entry's name, `… N more` for a fold, or the worktree's folder name. */
   readonly name: string
+  /** The linked worktree the row lies in (its path, as git lists it); unset in the session's own tree. */
+  readonly worktree?: string
+  /** Shown after the name on a worktree's row: its branch. */
+  readonly detail?: string
   readonly isOpen: boolean
   readonly tone: RowTone
   /** The file's own git mark; for a folder, `M` when anything below it changed. */
@@ -73,6 +83,19 @@ export const relativeTo = (root: string, path: string): string | undefined => {
     parts.push(part)
   }
   return parts.length === 0 ? undefined : parts.join('/')
+}
+
+/** Whether a path is absolute: rooted at `/`, on a drive, or on a network share. */
+export const isAbsolutePath = (path: string): boolean => path.startsWith('/') || isWindowsRoot(path)
+
+/** Whether two absolute paths name the same folder: case-blind and either slash under Windows. */
+export const isSamePath = (a: string, b: string): boolean => {
+  const isWindows = isWindowsRoot(a) || isWindowsRoot(b)
+  const plain = (path: string): string => {
+    const trimmed = (isWindows ? path.replace(/\\/g, '/') : path).replace(/\/+$/, '')
+    return isWindows ? trimmed.toLowerCase() : trimmed
+  }
+  return plain(a) === plain(b)
 }
 
 /** Whether an already resolved real path lies strictly inside the resolved root. */
@@ -311,15 +334,18 @@ export const anchorOf = (rows: readonly TreeRow[], touched: readonly TouchedFile
   if (active >= 0) return active
   const latest = [...touched].reverse()
   for (const file of latest) {
-    const index = rows.findIndex(row => row.key === file.path)
+    const index = rows.findIndex(row => row.kind === 'file' && row.key === file.path && row.worktree === file.worktree)
     if (index >= 0) return index
   }
-  const holder = focus?.path ?? latest[0]?.path
-  for (const dir of holder === undefined ? [] : ancestorsOf(holder).slice(1).reverse()) {
-    const index = rows.findIndex(row => row.kind === 'dir' && row.key === dir)
+  const holder = focus ?? latest[0]
+  if (holder === undefined) return 0
+  for (const dir of ancestorsOf(holder.path).slice(1).reverse()) {
+    const index = rows.findIndex(row => row.kind === 'dir' && row.key === dir && row.worktree === holder.worktree)
     if (index >= 0) return index
   }
-  return 0
+  // A worktree section closed by hand: its own row.
+  const section = rows.findIndex(row => row.kind === 'root' && holder.worktree !== undefined && row.worktree === holder.worktree)
+  return Math.max(0, section)
 }
 
 /** The rows that fit `budget` lines, and how many are cut above and below (each cut takes a line). */
@@ -348,26 +374,34 @@ export const windowRows = (rows: readonly TreeRow[], anchor: number, budget: num
   return { rows: rows.slice(start, start + visible), above: start, below: rows.length - start - visible }
 }
 
-/** A row's badge text: `+3 M` on a file, `+3 M:2` on a folder, empty when unchanged. */
+/** A row's badge text: `+3 M` on a file, `+3 M:2` on a folder or worktree, empty when unchanged. */
 export const badgeOf = (row: TreeRow): string => {
   if (row.mark === undefined) return ''
   const lines = row.added > 0 ? `+${row.added} ` : ''
-  return row.kind === 'dir' ? `${lines}M:${row.changes}` : `${lines}${row.mark}`
+  return row.kind === 'file' ? `${lines}${row.mark}` : `${lines}M:${row.changes}`
 }
+
+/** A file as the folded line names it: prefixed by its worktree's folder when it lies in one. */
+export const placeLabel = (file: { readonly path: string; readonly worktree?: string }): string =>
+  safeText(file.worktree === undefined ? file.path : `${fileName(file.worktree)}: ${file.path}`)
 
 /** The folded section's one line: what the main loop works on, else the last file touched. */
 export const treeLine = (focus: TreeFocus | null, touched: readonly TouchedFile[]): string | null => {
-  if (focus !== null) return `${focus.kind === 'edit' ? 'editing' : 'reading'} ${safeText(focus.path)}`
+  if (focus !== null) return `${focus.kind === 'edit' ? 'editing' : 'reading'} ${placeLabel(focus)}`
   const last = touched.at(-1)
-  return last === undefined ? null : `last ${safeText(last.path)}`
+  return last === undefined ? null : `last ${placeLabel(last)}`
 }
 
-/** Notes a touch: the file moves to the end, carrying who touched it this time. */
-export const touch = (touched: readonly TouchedFile[], path: string, workerId: string | undefined): readonly TouchedFile[] => {
+/** Notes a touch: the file moves to the end, carrying who touched it this time and in which worktree. */
+export const touch = (touched: readonly TouchedFile[], path: string, workerId: string | undefined, worktree?: string): readonly TouchedFile[] => {
   const latest = touched.at(-1)
-  if (latest?.path === path && latest.workerId === workerId) return touched
-  const fresh: TouchedFile = workerId === undefined ? { path } : { path, workerId }
-  return [...touched.filter(file => file.path !== path), fresh].slice(-MAX_TOUCHED)
+  if (latest?.path === path && latest.workerId === workerId && latest.worktree === worktree) return touched
+  const fresh: TouchedFile = {
+    path,
+    ...(workerId === undefined ? {} : { workerId }),
+    ...(worktree === undefined ? {} : { worktree }),
+  }
+  return [...touched.filter(file => file.path !== path || file.worktree !== worktree), fresh].slice(-MAX_TOUCHED)
 }
 
 /** Whether the snapshot lacks a listing the tree would open now, so a read is due. */
@@ -375,19 +409,198 @@ export const isMissingListing = (snapshot: TreeSnapshot | null, paths: readonly 
   snapshot === null || [...expandedDirs(paths)].some(dir => snapshot.listings[dir] === undefined)
 
 /** The pieces of one drawn row, the name cut so the row fits `columns` cells. */
-export type RowParts = { readonly indent: string; readonly glyph: string; readonly name: string; readonly badge: string }
+export type RowParts = {
+  readonly indent: string
+  readonly glyph: string
+  readonly name: string
+  /** A worktree row's branch, cut short; empty on other rows. */
+  readonly detail: string
+  readonly badge: string
+}
 
-/** Lays out a row: two cells of indent per level, a glyph, the name, then its badge after a gap. */
+/** Safe text cut to `room` cells, counted by code point so a cut never splits a surrogate pair. */
+const cutTo = (text: string, room: number): string => {
+  const shown = [...safeText(text)]
+  return shown.length <= room ? shown.join('') : `${shown.slice(0, room - 1).join('')}…`
+}
+
+/** Lays out a row: two cells of indent per level, a glyph, the name, a worktree's branch, then its badge after a gap. */
 export const rowParts = (row: TreeRow, columns: number): RowParts => {
   const indent = '  '.repeat(row.depth)
-  const glyph = row.kind === 'dir' ? (row.isOpen ? '▾ ' : '▸ ')
+  const glyph = row.kind === 'dir' || row.kind === 'root' ? (row.isOpen ? '▾ ' : '▸ ')
     : row.tone === 'active' || row.tone === 'worker' ? '● '
     : row.tone === 'touched' ? '· '
     : '  '
   const badge = badgeOf(row)
-  const room = Math.max(4, columns - indent.length - glyph.length - (badge === '' ? 0 : badge.length + 2))
-  // Counted by code point, so a cut never splits a surrogate pair.
-  const shown = [...safeText(row.name)]
-  const name = shown.length <= room ? shown.join('') : `${shown.slice(0, room - 1).join('')}…`
-  return { indent, glyph, name, badge }
+  const detail = row.detail === undefined ? '' : cutTo(row.detail, MAX_DETAIL)
+  const room = Math.max(4, columns - indent.length - glyph.length
+    - (badge === '' ? 0 : badge.length + 2) - (detail === '' ? 0 : [...detail].length + 2))
+  return { indent, glyph, name: cutTo(row.name, room), detail, badge }
 }
+
+// ── Linked worktrees ───────────────────────────────────────────────────────────────────
+// The repository's other worktrees (a subagent's under .claude/worktrees, a `git worktree add
+// ../x`) each draw as a section of their own under the session's tree, read in their own root.
+
+/** One linked worktree as `git worktree list` names it. */
+export type WorktreeEntry = { readonly path: string; readonly branch?: string }
+
+/**
+ * Parses `git worktree list --porcelain -z` (git 2.36 or later; older git fails the call and no
+ * worktree is drawn): each attribute ends in NUL, each record in one more. Bare repositories,
+ * prunable ones (gone from disk) and paths that are not absolute are skipped.
+ */
+export const parseWorktreeList = (output: string): readonly WorktreeEntry[] => {
+  const entries: WorktreeEntry[] = []
+  for (const record of output.split('\0\0')) {
+    const fields = record.split('\0')
+    const path = fields.find(field => field.startsWith('worktree '))?.slice('worktree '.length)
+    if (path === undefined || !isAbsolutePath(path)) continue
+    if (fields.some(field => field === 'bare' || field === 'prunable' || field.startsWith('prunable '))) continue
+    const branch = fields.find(field => field.startsWith('branch '))?.slice('branch '.length).replace(/^refs\/heads\//, '')
+    entries.push(branch === undefined || branch === '' ? { path } : { path, branch })
+  }
+  return entries
+}
+
+/** The repository's other worktrees: all but the session's own (any of `own`'s spellings). */
+export const linkedWorktrees = (entries: readonly WorktreeEntry[], own: readonly string[]): readonly WorktreeEntry[] =>
+  entries.filter(entry => !own.some(path => isSamePath(path, entry.path)))
+
+/**
+ * The worktrees drawn as sections, capped: those the session worked in first, so a busy
+ * `.claude/worktrees` never pushes out the one in use, then the rest in git's order.
+ */
+export const shownWorktrees = (entries: readonly WorktreeEntry[], touched: readonly TouchedFile[], focus: TreeFocus | null): readonly WorktreeEntry[] => {
+  const isWorked = (entry: WorktreeEntry): boolean =>
+    touchedIn(touched, entry.path).length > 0 || focusIn(focus, entry.path) !== null
+  return [...entries.filter(isWorked), ...entries.filter(entry => !isWorked(entry))].slice(0, MAX_WORKTREES)
+}
+
+/**
+ * A worktree's path in each spelling of the session root it may sit under: git prints real paths
+ * (`/private/var` on macOS), a tool may give the root as the session spells it (`/var`).
+ */
+export const spellingsOf = (path: string, root: string, rootReal: string): readonly string[] => {
+  const underReal = relativeTo(rootReal, path)
+  const underRoot = relativeTo(root, path)
+  const others = [
+    ...(underReal === undefined ? [] : [`${root.replace(/[\\/]+$/, '')}/${underReal}`]),
+    ...(underRoot === undefined ? [] : [`${rootReal.replace(/[\\/]+$/, '')}/${underRoot}`]),
+  ]
+  return [...new Set([path, ...others])]
+}
+
+/** A root a tool's path may lie under: the session's (`worktree` unset) or a linked worktree's, in each spelling. */
+export type TreeRoot = { readonly worktree?: string; readonly spellings: readonly string[] }
+
+/** Where a file sits in the tree: its path relative to its root, and the worktree when it is one. */
+export type TreePlace = { readonly path: string; readonly worktree?: string }
+
+/**
+ * Places a tool's path under the deepest root holding it, so a worktree nested in the project
+ * (`.claude/worktrees/x`) wins over the project itself. Within a root its first spelling that
+ * holds the path counts, as given before resolved. A relative path is the session's own.
+ */
+export const placeFile = (roots: readonly TreeRoot[], file: string): TreePlace | undefined => {
+  const isAbsolute = isAbsolutePath(file)
+  let best: { readonly place: TreePlace; readonly depth: number } | undefined
+  for (const root of roots) {
+    if (!isAbsolute && root.worktree !== undefined) continue
+    const spelling = root.spellings.find(candidate => relativeTo(candidate, file) !== undefined)
+    const path = spelling === undefined ? undefined : relativeTo(spelling, file)
+    if (spelling === undefined || path === undefined) continue
+    const depth = spelling.split(/[\\/]+/).filter(part => part !== '').length
+    if (best !== undefined && best.depth >= depth) continue
+    best = { place: root.worktree === undefined ? { path } : { path, worktree: root.worktree }, depth }
+  }
+  return best?.place
+}
+
+/**
+ * Listings without the folders another root sits in (a worktree under `.claude/worktrees`, the
+ * session's own checkout), so no file is drawn twice. `rootSpellings` are the listed root's.
+ */
+export const withoutMounts = (
+  listings: Readonly<Record<string, readonly TreeEntry[]>>,
+  rootSpellings: readonly string[],
+  mounts: readonly string[],
+): Readonly<Record<string, readonly TreeEntry[]>> => {
+  const hidden = new Set(mounts.flatMap(mount => rootSpellings.map(root => relativeTo(root, mount)))
+    .filter((path): path is string => path !== undefined))
+  if (hidden.size === 0) return listings
+  return Object.fromEntries(Object.entries(listings).map(([dir, entries]) =>
+    [dir, entries.filter(entry => !hidden.has(dir === '' ? entry.name : `${dir}/${entry.name}`))]))
+}
+
+/** The touches made in one root: the session's (`worktree` undefined) or a linked worktree's. */
+export const touchedIn = (touched: readonly TouchedFile[], worktree: string | undefined): readonly TouchedFile[] =>
+  touched.filter(file => file.worktree === worktree)
+
+/** The live file when it lies in that root, else none. */
+export const focusIn = (focus: TreeFocus | null, worktree: string | undefined): TreeFocus | null =>
+  focus !== null && focus.worktree === worktree ? focus : null
+
+/** Whether a worktree's section is open: the person's toggle, else whether the session worked in it. */
+export const isWorktreeOpen = (worktree: string, touched: readonly TouchedFile[], focus: TreeFocus | null, toggles: FolderToggles = {}): boolean =>
+  toggles[''] ?? (touchedIn(touched, worktree).length > 0 || focusIn(focus, worktree) !== null)
+
+/** An edit inside a worktree: its section and folders closed by hand open again. */
+export const reopenWorktreeFor = (
+  all: Readonly<Record<string, FolderToggles>>,
+  worktree: string,
+  path: string,
+): Readonly<Record<string, FolderToggles>> => {
+  const current = all[worktree]
+  if (current === undefined) return all
+  const next = reopenFor(current, path)
+  return next === current ? all : { ...all, [worktree]: next }
+}
+
+/** A click on a worktree's row or one of its folders. */
+export const toggleWorktreeFolder = (
+  all: Readonly<Record<string, FolderToggles>>,
+  worktree: string,
+  path: string,
+  isOpen: boolean,
+): Readonly<Record<string, FolderToggles>> => ({ ...all, [worktree]: toggleFolder(all[worktree] ?? {}, path, isOpen) })
+
+/**
+ * Whether a worktree's section lacks a listing it would draw now, so a read is due. A section
+ * closed by hand draws none, so it never asks.
+ */
+export const isMissingWorktreeListing = (snapshot: TreeSnapshot | null, worktree: string, paths: readonly string[], toggles: FolderToggles = {}): boolean => {
+  if (toggles[''] === false) return false
+  const section = snapshot?.worktrees?.find(entry => entry.path === worktree)
+  return section === undefined || [...expandedDirs(paths)].some(dir => section.tree.listings[dir] === undefined)
+}
+
+/** Everything the whole tree is drawn from: the session's root, then each linked worktree. */
+export type SessionTreeInput = TreeInput & { readonly worktreeToggles?: Readonly<Record<string, FolderToggles>> }
+
+/** One worktree's section: its own row, then (open) its tree one level in. */
+const worktreeSection = (section: WorktreeSnapshot, input: SessionTreeInput): readonly TreeRow[] => {
+  const { path: worktree, tree } = section
+  const touched = touchedIn(input.touched, worktree)
+  const focus = focusIn(input.focus, worktree)
+  const toggles = input.worktreeToggles?.[worktree] ?? {}
+  const isOpen = isWorktreeOpen(worktree, touched, focus, toggles) && tree.listings[''] !== undefined
+  const total = rollUp(tree).get('')
+  const header: TreeRow = {
+    key: '', kind: 'root', depth: 0, name: tree.rootName, isOpen, worktree,
+    tone: touched.length > 0 || focus !== null ? 'touched' : 'plain',
+    ...(tree.branch === undefined ? {} : { detail: tree.branch }),
+    ...(total === undefined ? {} : { mark: 'M' as const }),
+    changes: total?.changes ?? 0,
+    added: total?.added ?? 0,
+  }
+  if (!isOpen) return [header]
+  const rows = treeRows({ snapshot: tree, focus, touched, toggles, ...(input.maxPerDir === undefined ? {} : { maxPerDir: input.maxPerDir }) })
+  return [header, ...rows.map(row => ({ ...row, depth: row.depth + 1, worktree }))]
+}
+
+/** The session's tree, then a section per linked worktree, as one list of rows for the window. */
+export const sessionTreeRows = (input: SessionTreeInput): readonly TreeRow[] => [
+  ...treeRows({ ...input, focus: focusIn(input.focus, undefined), touched: touchedIn(input.touched, undefined) }),
+  ...(input.snapshot.worktrees ?? []).flatMap(section => worktreeSection(section, input)),
+]
