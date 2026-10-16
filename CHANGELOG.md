@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-16
+
 ### Added
 
 - The file tree shows the repository's other git worktrees as sections of their own, each with
