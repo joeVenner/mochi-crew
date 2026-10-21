@@ -247,6 +247,8 @@ declare module 'claude-code' {
       badgeEnded: BadgeEnding | null
       /** Session badge: whether tabs are tinted and titles get the emoji (saved across sessions). */
       isBadgeOn: boolean
+      /** Session badge: the tint the badge put on the tab, null when it is on its profile. */
+      badgePainted: TintId | null
     }
   }
 }

@@ -21,20 +21,21 @@ export const processTableArgv = (marker: string): readonly string[] => {
 
 /**
  * Reads that `ps` output: every process row, and the parent of the row that is this very
- * `ps` (its arguments carry the marker), or undefined when no row does.
+ * `ps`: the one row whose arguments are exactly that argument list. Undefined when no row
+ * or more than one does, so a decoy carrying the marker leads nowhere.
  */
 export const parseProcessTable = (text: string, marker: string): { startPid: number | undefined; rows: ReadonlyMap<number, ProcessRow> } => {
   const rows = new Map<number, ProcessRow>()
-  let startPid: number | undefined
+  const expected = processTableArgv(marker).join(' ')
+  const hits: number[] = []
   for (const line of text.split('\n')) {
     const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line)
     if (!match) continue
     const row = { pid: Number(match[1]), ppid: Number(match[2]), tty: match[3] ?? '' }
     rows.set(row.pid, row)
-    const args = match[4] ?? ''
-    if (args.startsWith('/bin/ps ') && args.includes(`${MARKER_PREFIX}${marker}`)) startPid = row.ppid
+    if ((match[4] ?? '').trimEnd() === expected) hits.push(row.ppid)
   }
-  return { startPid, rows }
+  return { startPid: hits.length === 1 ? hits[0] : undefined, rows }
 }
 
 /**

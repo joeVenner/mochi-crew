@@ -62,6 +62,7 @@ describe('badge tab lookup', () => {
       `                     mochi-badge-${MARKER}`,
       ` 1631 33356 ??       /bin/ps -A -o pid=,ppid=,tty=,args=mochi-badge-${MARKER}`,
       ` 1700 33356 ??       grep mochi-badge-${MARKER}`,
+      ` 1701  4242 ??       /bin/ps -A x mochi-badge-${MARKER}`,
       '33356   783 ttys001  claude',
       '  783   777 ttys001  -zsh',
       '    1     0 ??       /sbin/launchd',
@@ -73,6 +74,8 @@ describe('badge tab lookup', () => {
 
   test('answers nothing without its own row, a tty, a parent, or with a loop', () => {
     expect(parseProcessTable(' 5 1 ?? /bin/ps -A', MARKER).startPid).toBeUndefined()
+    const own = `/bin/ps -A -o pid=,ppid=,tty=,args=mochi-badge-${MARKER}`
+    expect(parseProcessTable(` 5 1 ?? ${own}\n 6 2 ?? ${own}`, MARKER).startPid).toBeUndefined()
     expect(findControllingTty(undefined, new Map())).toBeUndefined()
     expect(findControllingTty(5, parseProcessTable('5 1 ?? x', MARKER).rows)).toBeUndefined()
     expect(findControllingTty(5, parseProcessTable('5 6 ?? x\n6 5 ?? y', MARKER).rows)).toBeUndefined()
@@ -165,7 +168,7 @@ describe('badge titles', () => {
 
 describe('badge records and commands', () => {
   test('accepts a well-formed record and cleans its titles', () => {
-    expect(parseRecord({ tint: 'pine', pinned: 'x', extra: true })).toEqual({ tint: 'pine', recentSet: [], pinned: 'x', aiTitle: undefined })
+    expect(parseRecord({ tint: 'pine', pinned: 'x', aiTitle: 'not kept', extra: true })).toEqual({ tint: 'pine', recentSet: [], pinned: 'x' })
     expect(parseRecord({ tint: 'teal' })).toBeUndefined()
     expect(parseRecord(null)).toBeUndefined()
     const record = parseRecord({ tint: 'plum', pinned: '\u001b]0;evil\u0007', recentSet: ['🟣 a', 7, '\u0007'] })

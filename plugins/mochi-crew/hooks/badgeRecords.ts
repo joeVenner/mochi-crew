@@ -1,6 +1,7 @@
 /**
  * What the badge remembers per session in the plugin's store, so a resume or a reload
- * keeps the same color and title. The oldest records are pruned.
+ * keeps the same color and title. Claude Code's topic is not kept: it is read from the
+ * transcript each time. The oldest records are pruned.
  */
 
 import type { EngineInterface } from 'claude-code'
@@ -14,8 +15,6 @@ export type BadgeRecord = {
   /** The last few titles Mochi set, newest last. */
   readonly recentSet: readonly string[]
   readonly pinned?: string
-  /** Claude Code's topic as last read, kept for when a later read misses it. */
-  readonly aiTitle?: string
 }
 
 const KEY_PREFIX = 'badge:session:'
@@ -32,7 +31,7 @@ export const rememberSet = (record: BadgeRecord, title: string): BadgeRecord => 
   recentSet: [...record.recentSet.filter(one => one !== title), title].slice(-MAX_RECENT_SET),
 })
 
-export const withoutPinned = (record: BadgeRecord): BadgeRecord => ({ tint: record.tint, recentSet: record.recentSet, aiTitle: record.aiTitle })
+export const withoutPinned = (record: BadgeRecord): BadgeRecord => ({ tint: record.tint, recentSet: record.recentSet })
 
 const readField = (value: object, name: string): unknown => Object.getOwnPropertyDescriptor(value, name)?.value
 
@@ -52,7 +51,6 @@ export const parseRecord = (value: unknown): BadgeRecord | undefined => {
     tint: tint.id,
     recentSet: Array.isArray(recent) ? recent.map(storedTitle).filter((title): title is string => title !== undefined).slice(-MAX_RECENT_SET) : [],
     pinned: storedTitle(readField(value, 'pinned')),
-    aiTitle: storedTitle(readField(value, 'aiTitle')),
   }
 }
 

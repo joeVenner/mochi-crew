@@ -24,6 +24,7 @@ const badge = atom({ plugin: 'mochi-crew', key: 'badge' } as const, null)
 const badgeTab = atom({ plugin: 'mochi-crew', key: 'badgeTab' } as const, null)
 const badgeEnded = atom({ plugin: 'mochi-crew', key: 'badgeEnded' } as const, null)
 const isBadgeOn = atom({ plugin: 'mochi-crew', key: 'isBadgeOn' } as const, true)
+const badgePainted = atom({ plugin: 'mochi-crew', key: 'badgePainted' } as const, null)
 
 /** The store key of the on/off switch, saved across sessions. */
 const SWITCH_KEY = 'badgeOn'
@@ -31,23 +32,31 @@ const SWITCH_KEY = 'badgeOn'
 const MAX_TAB_LOOKUPS = 3
 /** How long after a fresh pick to look for another session that picked the same color. */
 const COLLISION_CHECK_DELAY_MS = 2_500
+/**
+ * The longest a prompt or a command waits for a start still in flight. Well under the
+ * engine's hook budget: a start held up by macOS's automation question means no title on
+ * this prompt, and the next one tries again.
+ */
+const START_WAIT_MS = 2_000
+/** A topic row is short; anything longer is not parsed. */
+const MAX_TOPIC_ROW_BYTES = 16_384
 
 /**
  * What this load of the module knows. A hot reload starts it over; what must outlive one
  * (the tab, the badge, how the last session ended) is in the session's state.
  */
 const runtime: {
-  /** The tint this load put on the tab, whether or not a later repaint failed. */
-  paintedTint: Tint | undefined
   /** `<session>:<tint>` this load already tried to paint, so a failing paint is not retried every prompt. */
   paintTriedFor: string | undefined
+  /** Whether this load saw an interactive session start; a `-p` run never does, so it is never badged. */
+  hasStarted: boolean
   isEnded: boolean
   hasWarnedAutomation: boolean
   tabLookups: number
   ready: Promise<void>
 } = {
-  paintedTint: undefined,
   paintTriedFor: undefined,
+  hasStarted: false,
   isEnded: false,
   hasWarnedAutomation: false,
   tabLookups: 0,
@@ -55,6 +64,11 @@ const runtime: {
 }
 
 const describeError = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+/** Waits for `work` at most `ms`; true when it finished in time. */
+async function within($: EngineInterface, work: Promise<unknown>, ms: number): Promise<boolean> {
+  return Promise.race([work.then(() => true), $.clock.sleep(ms).then(() => false)])
+}
 
 function logDebug($: EngineInterface, text: string): void {
   return $.ui.log(`mochi-crew: badge: ${text}`, { to: 'debug' })
@@ -68,8 +82,10 @@ function warnAutomation($: EngineInterface, error: unknown): void {
   $.ui.log('mochi-crew: could not reach Terminal.app to tint this tab. If macOS asked about automation, allow it in System Settings > Privacy & Security > Automation. The emoji title still works.')
 }
 
+/** Terminal.app on this Mac: an ssh session inherits TERM_PROGRAM but would tint the remote Mac's tabs. */
 async function isAppleTerminal($: EngineInterface): Promise<boolean> {
-  return (await $.env.get('TERM_PROGRAM')) === 'Apple_Terminal'
+  const [program, sshConnection, sshTty] = await Promise.all([$.env.get('TERM_PROGRAM'), $.env.get('SSH_CONNECTION'), $.env.get('SSH_TTY')])
+  return program === 'Apple_Terminal' && !sshConnection && !sshTty
 }
 
 /** 32 random hex digits, so this lookup's own `ps` row cannot be mistaken for another's. */
@@ -116,13 +132,13 @@ async function otherTabColors($: EngineInterface, target: BadgeTab | undefined):
   }
 }
 
-/** Puts the tab back on its profile, if this load painted it and it still wears that tint. */
+/** Puts the tab back on its profile, if the badge painted it and it still wears that tint. */
 async function unpaint($: EngineInterface): Promise<void> {
   const target = await read($, badgeTab)
-  const painted = runtime.paintedTint
+  const painted = findTint((await read($, badgePainted)) ?? undefined)
   if (!target || !painted) return
   const outcome = await restoreTab($, target.tty, target.profile, hexToRgb16(painted.hex))
-  runtime.paintedTint = undefined
+  await update($, badgePainted, () => null)
   if (outcome !== 'ok') logDebug($, `left the tab alone on restore: ${outcome}`)
 }
 
@@ -136,7 +152,7 @@ async function paint($: EngineInterface, tint: Tint): Promise<boolean> {
   } catch (error) {
     warnAutomation($, error)
   }
-  if (isPainted) runtime.paintedTint = tint
+  if (isPainted) await update($, badgePainted, () => tint.id)
   // The session may have ended while osascript ran: take the tint straight back off.
   if (isPainted && runtime.isEnded) await unpaint($)
   return isPainted
@@ -174,18 +190,19 @@ async function settleCollision($: EngineInterface, sessionId: string, tint: Tint
  * it has one (a resume, a reload), the previous session's color after a /clear, else a
  * fresh pick of the color fewest other tabs wear. Paints the tab while the badge is on.
  */
-async function adoptSession($: EngineInterface, sessionId: string): Promise<BadgeRecord> {
-  const isOn = await read($, isBadgeOn)
-  const current = await read($, badge)
+async function adoptSession($: EngineInterface, sessionId: string): Promise<BadgeRecord | undefined> {
   const saved = await loadRecord($, sessionId)
+  // Off: no color is picked and nothing is saved until the badge is switched on.
+  if (!(await read($, isBadgeOn))) return saved
+  const current = await read($, badge)
   const isSameSession = current?.sessionId === sessionId
   const triedKey = saved ? `${sessionId}:${saved.tint}` : undefined
-  const isSettled = saved !== undefined && isSameSession && (!isOn || runtime.paintedTint?.id === saved.tint || runtime.paintTriedFor === triedKey)
+  const isSettled = saved !== undefined && isSameSession && ((await read($, badgePainted)) === saved.tint || runtime.paintTriedFor === triedKey)
   if (saved && isSettled) return saved
 
   const lastEnding = await read($, badgeEnded)
   const isClearedHere = current !== null && !isSameSession && lastEnding?.reason === 'clear' && lastEnding.sessionId === current.sessionId
-  const { target, others: foundOthers } = isOn ? await ensureTab($) : { target: undefined, others: [] }
+  const { target, others: foundOthers } = await ensureTab($)
 
   let record: BadgeRecord
   let isFreshPick = false
@@ -195,7 +212,7 @@ async function adoptSession($: EngineInterface, sessionId: string): Promise<Badg
     // A reload whose record went missing, or a /clear: the tab keeps the color it wears.
     record = newRecord(current.tintId)
   } else {
-    const others = foundOthers.length > 0 || !isOn ? foundOthers : await otherTabColors($, target)
+    const others = foundOthers.length > 0 ? foundOthers : await otherTabColors($, target)
     record = newRecord(pickTint(others, sessionId).id)
     isFreshPick = true
   }
@@ -205,19 +222,26 @@ async function adoptSession($: EngineInterface, sessionId: string): Promise<Badg
   if (!isSameSession) runtime.isEnded = false
 
   const tint = findTint(record.tint)
-  if (tint && isOn) {
+  if (tint) {
     runtime.paintTriedFor = `${sessionId}:${tint.id}`
-    await paint($, tint)
-    if (isFreshPick) void settleCollision($, sessionId, tint).catch(error => logDebug($, `collision check failed: ${describeError(error)}`))
+    // The title needs only the record: the paint runs behind it.
+    void paint($, tint)
+      .then(() => (isFreshPick ? settleCollision($, sessionId, tint) : undefined))
+      .catch(error => logDebug($, `paint failed: ${describeError(error)}`))
   }
   return record
 }
 
 /** Runs at session start: reads the saved switch, adopts the session and paints its tab, off the start-up path. */
 export function startBadge($: EngineInterface, sessionId: string): void {
+  // The saved switch seeds the state once per load; after that the state is the truth, so a /clear keeps it.
+  const isFirstStart = !runtime.hasStarted
+  runtime.hasStarted = true
   runtime.ready = (async () => {
-    const saved = await $.store.get(SWITCH_KEY).catch(() => undefined)
-    await update($, isBadgeOn, () => saved !== false)
+    if (isFirstStart) {
+      const saved = await $.store.get(SWITCH_KEY).catch(() => undefined)
+      await update($, isBadgeOn, () => saved !== false)
+    }
     await adoptSession($, sessionId)
   })().catch(error => logDebug($, `start failed: ${describeError(error)}`))
 }
@@ -235,14 +259,15 @@ export const isTranscriptPath = (path: string): boolean =>
   path.startsWith('/') && !path.split('/').includes('..') && /\/projects\/[^/]+\/[^/]+\.jsonl$/.test(path)
 
 /**
- * Reads Claude Code's topic from the transcript. Claude Code writes it once, early, so
- * grep stops at the first row instead of reading the whole file.
+ * Reads Claude Code's topic from the transcript. Claude Code generates it once, from the
+ * first message, and repeats that same row later, so grep stops at the first one instead of
+ * reading the whole file.
  */
 async function readAiTitle($: EngineInterface, transcriptPath: string): Promise<string | undefined> {
   if (!isTranscriptPath(transcriptPath)) return undefined
   const { exitCode, stdout } = await $.process.run(['/usr/bin/grep', '-F', '-m', '1', '"type":"ai-title"', '--', transcriptPath], { timeoutMs: 5_000 })
   // grep exits 1 when nothing matched: no topic yet.
-  return exitCode === 0 ? latestAiTitle(stdout) : undefined
+  return exitCode === 0 && stdout.length <= MAX_TOPIC_ROW_BYTES ? latestAiTitle(stdout) : undefined
 }
 
 export type PromptInput = {
@@ -253,11 +278,20 @@ export type PromptInput = {
 
 /** Decides this prompt's title, or undefined to leave Claude Code's as it is. */
 export async function badgeTitleFor($: EngineInterface, input: PromptInput): Promise<string | undefined> {
-  await runtime.ready
+  if (!runtime.hasStarted || !(await within($, runtime.ready, START_WAIT_MS))) return undefined
+  if (!(await read($, isBadgeOn))) {
+    // Off: only take the emoji back out of a title the badge wrote.
+    const record = await loadRecord($, input.sessionId)
+    if (!record) return undefined
+    const decision = decideTitle({ current: input.sessionTitle, recentSet: record.recentSet, pinned: record.pinned, aiTitle: undefined, tint: undefined, isOff: true })
+    if (decision.title || decision.pinned !== record.pinned) await saveRecord($, input.sessionId, { ...record, pinned: decision.pinned })
+    return decision.title
+  }
   const base = await adoptSession($, input.sessionId)
-  let aiTitle = base.aiTitle
+  if (!base) return undefined
+  let aiTitle: string | undefined
   try {
-    aiTitle = (await readAiTitle($, input.transcriptPath)) ?? base.aiTitle
+    aiTitle = await readAiTitle($, input.transcriptPath)
   } catch (error) {
     logDebug($, `could not read the topic: ${describeError(error)}`)
   }
@@ -267,18 +301,20 @@ export async function badgeTitleFor($: EngineInterface, input: PromptInput): Pro
     pinned: base.pinned,
     aiTitle,
     tint: findTint(base.tint),
-    isOff: !(await read($, isBadgeOn)),
+    isOff: false,
   })
-  const counted: BadgeRecord = { ...base, pinned: decision.pinned, aiTitle }
+  const counted: BadgeRecord = { ...base, pinned: decision.pinned }
   await saveRecord($, input.sessionId, decision.title ? rememberSet(counted, decision.title) : counted)
   return decision.title
 }
 
 /** Answers `/mochi badge <args>`. */
 export async function runBadgeCommand($: EngineInterface, args: string): Promise<string> {
+  await within($, runtime.ready, START_WAIT_MS)
   const sessionId = await $.session.id()
-  const record = await adoptSession($, sessionId)
   const isOn = await read($, isBadgeOn)
+  // While off a session may have no color yet: one is picked blind, and checked against the other tabs once switched on.
+  const record = (await adoptSession($, sessionId)) ?? newRecord(pickTint([], sessionId).id)
   const command = parseBadgeCommand(args)
   const save = async (next: BadgeRecord): Promise<void> => {
     await saveRecord($, sessionId, next)
@@ -297,7 +333,8 @@ export async function runBadgeCommand($: EngineInterface, args: string): Promise
         await unpaint($).catch(error => warnAutomation($, error))
         return `Badge off${note}: the tab is back on its profile, and the emoji leaves the title on your next prompt.`
       }
-      const tint = findTint(record.tint)
+      const adopted = (await adoptSession($, sessionId)) ?? record
+      const tint = findTint(adopted.tint)
       const isPainted = tint ? await paint($, tint) : false
       return `Badge on${note}.${tabNote(isPainted)}`
     }

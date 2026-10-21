@@ -23,14 +23,16 @@ type Host = {
   /** What the tint script answers: `missing` stands for a tab Terminal no longer has. */
   tintAnswer: string
   termProgram: string
+  /** SSH_CONNECTION, set for a session reached over ssh. */
+  ssh: string | undefined
 }
 
 const host = (on: On, stored: Readonly<Record<string, unknown>> = {}): Host => {
-  const machine: Host = { runs: [], sessionId: 'sess-1', aiTitles: '', otherTabs: [], tintAnswer: 'ok', termProgram: 'Apple_Terminal' }
+  const machine: Host = { runs: [], sessionId: 'sess-1', aiTitles: '', otherTabs: [], tintAnswer: 'ok', termProgram: 'Apple_Terminal', ssh: undefined }
   const ok = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '' } as never })
   mock.clock(on)
   mock.store(on, stored)
-  on('env.get', ($, e) => ({ value: e.name === 'TERM_PROGRAM' ? machine.termProgram : undefined }))
+  on('env.get', ($, e) => ({ value: e.name === 'TERM_PROGRAM' ? machine.termProgram : e.name === 'SSH_CONNECTION' ? machine.ssh : undefined }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.log', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
@@ -155,9 +157,10 @@ describe('session badge', () => {
     expect(tints(machine).length).toBe(1)
   })
 
-  test('outside Terminal.app it runs no osascript and still titles the session', async ($, on) => {
+  for (const place of ['iTerm.app', 'ssh'] as const) test(`in ${place} it runs no osascript and still titles the session`, async ($, on) => {
     const machine = host(on)
-    machine.termProgram = 'iTerm.app'
+    if (place === 'ssh') machine.ssh = '10.0.0.2 51000 10.0.0.9 22'
+    else machine.termProgram = place
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     machine.aiTitles = '{"type":"ai-title","aiTitle":"Topic"}'
     expect((await prompt($, machine)).sessionTitle).toMatch(/^\S+ Topic$/)

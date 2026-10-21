@@ -1344,14 +1344,15 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     // Every ending closes this conversation's figures, a /clear and a resume included.
     await resetConversation($)
-    await endBadge($, e.sessionId, e.reason).catch((error: unknown) =>
-      $.ui.log(`mochi-crew: badge could not restore the tab: ${String(error)}`, { to: 'debug' }),
-    )
     isTreePulsing = false
     if (e.reason === 'prompt_input_exit' || e.reason === 'logout' || e.reason === 'other') {
       hudRefresh?.cancel()
       hudRefresh = undefined
     }
+    // Last and bounded: osascript may be slow, and Mochi's own cleanup above must not wait on it.
+    await Promise.race([endBadge($, e.sessionId, e.reason), $.clock.sleep(3_000)]).catch((error: unknown) =>
+      $.ui.log(`mochi-crew: badge could not restore the tab: ${String(error)}`, { to: 'debug' }),
+    )
     return next(e)
   }).catch(($, e, next) => (logFailure($, 'session.end', next.error), next(e)))
 
@@ -1381,7 +1382,7 @@ export const register: Register = on => {
     // The host reads go off the start-up path, so Mochi and /mascot never wait on them.
     void startMeter($).catch((error: unknown) => $.ui.log(`mochi-crew: meter could not start: ${String(error)}`, { to: 'debug' }))
     queueTreeRefresh($)
-    // Tinting the tab waits on osascript: it runs behind the start, and the first prompt waits for it.
+    // Tinting the tab waits on osascript, so it runs behind the start; a `-p` run is never badged.
     if (e.isInteractive) startBadge($, await $.session.id())
 
     return next(e)
