@@ -70,7 +70,7 @@ export type MascotCommand =
   | { kind: 'files'; isOn?: boolean }
   | { kind: 'error'; message: string }
 
-export const MASCOT_USAGE = 'usage: /mascot [pet | feed | dance | journal | missions | achievements | meter | files [on|off] | outfits | outfit <name> | sound on|off]'
+export const MASCOT_USAGE = 'usage: /mascot [pet | feed | dance | journal | missions | achievements | meter | files [on|off] | badge [on|off|color <name>|title <text>|auto] | outfits | outfit <name> | sound on|off]'
 
 /** Parses `/mascot` arguments; never throws, an unknown request is an `error` with usage. */
 export const parseMascotCommand = (args: string): MascotCommand => {
