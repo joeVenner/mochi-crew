@@ -4,6 +4,7 @@ import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer
 import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
+import { badgeTitleFor, endBadge, runBadgeCommand, startBadge } from './badge'
 import { mascotXAt, settle } from './behavior'
 import type { QuipEvent } from './events'
 import { activeQuip, isBugAlive, quipFor, spawnBug, squashBug, visibleBug } from './events'
@@ -763,6 +764,9 @@ const persist = async ($: EngineInterface, key: string, value: unknown): Promise
 
 /** Answers `/mascot <args>`: opens the pane, lists or switches outfits, toggles sound. */
 const runMascotCommand = async ($: EngineInterface, args: string): Promise<string> => {
+  // `badge` takes free text (a title), so it is read by its own parser.
+  const [verb = ''] = args.trim().split(/\s+/)
+  if (verb.toLowerCase() === 'badge') return runBadgeCommand($, args.trim().slice(verb.length))
   const command = parseMascotCommand(args)
   switch (command.kind) {
     case 'open':
@@ -1345,6 +1349,10 @@ export const register: Register = on => {
       hudRefresh?.cancel()
       hudRefresh = undefined
     }
+    // Last and bounded: osascript may be slow, and Mochi's own cleanup above must not wait on it.
+    await Promise.race([endBadge($, e.sessionId, e.reason), $.clock.sleep(3_000)]).catch((error: unknown) =>
+      $.ui.log(`mochi-crew: badge could not restore the tab: ${String(error)}`, { to: 'debug' }),
+    )
     return next(e)
   }).catch(($, e, next) => (logFailure($, 'session.end', next.error), next(e)))
 
@@ -1366,16 +1374,26 @@ export const register: Register = on => {
     for (const name of MASCOT_COMMANDS) {
       await $.command.register({
         name,
-        description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, change outfit, toggle sound',
-        argumentHint: '[journal | missions | achievements | meter | files [on|off] | outfits | outfit <name> | sound on|off]',
+        description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, set the session badge, change outfit, toggle sound',
+        argumentHint: '[journal | missions | achievements | meter | files [on|off] | badge [on|off|color <name>|title <text>|auto] | outfits | outfit <name> | sound on|off]',
       })
     }
     void $.ui.open({ id: PANE, title: TITLE })
     // The host reads go off the start-up path, so Mochi and /mascot never wait on them.
     void startMeter($).catch((error: unknown) => $.ui.log(`mochi-crew: meter could not start: ${String(error)}`, { to: 'debug' }))
     queueTreeRefresh($)
+    // Tinting the tab waits on osascript, so it runs behind the start; a `-p` run is never badged.
+    if (e.isInteractive) startBadge($, await $.session.id())
 
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // The session badge's emoji title. A title is never worth holding a prompt back: on failure the prompt goes on untitled.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agent_id || result.sessionTitle !== undefined || result.block !== undefined) return result
+    const title = await badgeTitleFor($, { sessionId: e.session_id, transcriptPath: e.transcript_path, sessionTitle: e.session_title })
+    return title ? { ...result, sessionTitle: title } : result
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'mascot' }, async ($, e) => ({ text: await runMascotCommand($, e.args) }))

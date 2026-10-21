@@ -187,6 +187,18 @@ export type WorktreeSnapshot = {
   readonly tree: TreeSnapshot
 }
 
+/** The session badge's color ids. */
+export type TintId = 'plum' | 'harbor' | 'pine' | 'claret' | 'rust' | 'moss' | 'walnut' | 'graphite'
+
+/** Session badge: which session the tint belongs to. */
+export type BadgeState = { readonly sessionId: string; readonly tintId: TintId }
+
+/** Session badge: the Terminal.app tab this session draws in and the profile to restore it to. */
+export type BadgeTab = { readonly tty: string; readonly profile: string }
+
+/** Session badge: how the last session in this process ended, so a /clear hands its color on. */
+export type BadgeEnding = { readonly sessionId: string; readonly reason: string }
+
 declare module 'claude-code' {
   interface PluginState {
     'mochi-crew': {
@@ -227,6 +239,16 @@ declare module 'claude-code' {
       tree: TreeSnapshot | null
       /** File tree: whether the section shows under the HUD (saved across sessions). */
       isTreeOn: boolean
+      /** Session badge: this session's tint, null before it is picked. */
+      badge: BadgeState | null
+      /** Session badge: the tab being tinted, null when none was found. */
+      badgeTab: BadgeTab | null
+      /** Session badge: how the last session in this process ended. */
+      badgeEnded: BadgeEnding | null
+      /** Session badge: whether tabs are tinted and titles get the emoji (saved across sessions). */
+      isBadgeOn: boolean
+      /** Session badge: the tint the badge put on the tab, null when it is on its profile. */
+      badgePainted: TintId | null
     }
   }
 }

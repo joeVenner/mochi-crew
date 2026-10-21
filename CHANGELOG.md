@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-21
+
+### Added
+
+- A session badge, so you can tell many sessions apart. In macOS Terminal.app each session's tab
+  gets its own dark tint, picked as the color the fewest other open tabs wear, and kept through
+  `/clear` and `/resume`; the tab goes back to its profile when the session ends. In any
+  terminal, the tab title leads with the matching color emoji in front of Claude Code's topic, and
+  a `/rename` keeps its words. `/mochi badge` shows the color and title, `color <name>`, `title
+  <text>` and `auto` change them, and `on|off` switches the badge for good (on by default).
+
 ## [1.4.0] - 2026-10-16
 
 ### Added
