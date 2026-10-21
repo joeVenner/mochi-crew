@@ -251,8 +251,9 @@ With several sessions open, each one gets its own color so you can pick the righ
 
 - **Tab tint.** In macOS Terminal.app the session's tab gets a dark background from eight colors
   (plum, harbor, pine, claret, rust, moss, walnut, graphite). Mochi picks the color the fewest other
-  open tabs wear, and a session keeps its color through `/clear`, `/resume` and restarts. When the
-  session ends, the tab goes back to its profile, unless you recolored it yourself meanwhile.
+  open tabs wear, and a session keeps its color through `/clear` and `/resume`. When the session
+  ends, Mochi re-applies the tab's profile (which also undoes other changes made to that tab), unless
+  you recolored it yourself meanwhile. Over ssh, Mochi leaves your tabs alone.
 - **Emoji title.** The tab title leads with the matching emoji: `✳ 🟣 SEO hub pages`. The topic is
   the one Claude Code generates from your first message, so it appears from your second prompt.
   Claude Code writes that topic once; change it with `/rename` or `/mochi badge title`. A
@@ -299,7 +300,8 @@ Commands:
 
 ## Privacy and safety
 
-- **Local only.** Nothing leaves your machine. The mod makes no network requests. The session
+- **Local only.** The mod makes no network requests. The session badge's title is handed to Claude
+  Code the way a `/rename` is, and Claude Code handles it like any session name. The session
   meter reads figures Claude Code already has, plus the provider-selection and cache-TTL environment
   variables by name. It asks only whether the session uses a key or a sign-in, never for the
   credential itself.
@@ -319,8 +321,9 @@ Commands:
 - **Never in the way.** Every hook passes the tool call through untouched, even if Mochi's own
   bookkeeping fails, and all scoring happens after the result is already on its way back.
 - **What is saved.** Level, XP, outfit, sound setting, the file tree switch, mood, energy and
-  badges persist in Claude Code's per-plugin store, and so do the session badge switch and, per
-  session, its color, a pinned title and the titles it set (the 300 most recent sessions). The session journal, missions, meter and the
+  badges persist in Claude Code's per-plugin store. So do the session badge switch and, for the 300
+  most recent sessions, each one's color, a title you pinned and the last few titles Mochi set,
+  which include Claude Code's topic for that session. The session journal, missions, meter and the
   tree's touched files reset every session.
 
 ## Development
