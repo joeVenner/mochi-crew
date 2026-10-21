@@ -12,9 +12,10 @@ Mochi types when Claude edits, grabs a hammer when a command runs, thinks along 
 and waves when it's your turn. Subagents join as a crew of kittens in role costumes. Fixed bugs,
 green tests and shipped turns earn XP, missions and badges. A session meter under the HUD shows
 your model, context fill, prompt-cache hit rate, and plan limits or cost, and a file tree shows
-where in the project Claude is working.
+where in the project Claude is working. With many sessions open, the session badge gives each
+Terminal tab its own color and a matching emoji in its title.
 
-[Install](#install) · [What it does](#what-it-does) · [The crew](#the-crew) · [Session meter](#session-meter) · [File tree](#file-tree) · [Controls](#controls) · [Privacy](#privacy-and-safety) · [Development](#development)
+[Install](#install) · [What it does](#what-it-does) · [The crew](#the-crew) · [Session meter](#session-meter) · [File tree](#file-tree) · [Session badge](#session-badge) · [Controls](#controls) · [Privacy](#privacy-and-safety) · [Development](#development)
 
 </div>
 
@@ -244,6 +245,24 @@ The tree takes only the rows the rest of the HUD leaves. In a short pane it fold
 such as `files   editing hooks/fileTree.ts`. Turn it off with `t`, the `files` button, or
 `/mascot files off`.
 
+## Session badge
+
+With several sessions open, each one gets its own color so you can pick the right tab at a glance:
+
+- **Tab tint.** In macOS Terminal.app the session's tab gets a dark background from eight colors
+  (plum, harbor, pine, claret, rust, moss, walnut, graphite). Mochi picks the color the fewest other
+  open tabs wear, and a session keeps its color through `/clear`, `/resume` and restarts. When the
+  session ends, the tab goes back to its profile, unless you recolored it yourself meanwhile.
+- **Emoji title.** The tab title leads with the matching emoji: `✳ 🟣 SEO hub pages`. The topic is
+  the one Claude Code generates from your first message, so it appears from your second prompt.
+  Claude Code writes that topic once; change it with `/rename` or `/mochi badge title`. A
+  `/rename` always wins and Mochi only adds the emoji.
+
+The title works in any terminal; the tint needs Terminal.app. The first time, macOS may ask to let
+Claude Code control Terminal: allow it for the tint. The emoji reaches the tab only while
+`terminalTitleFromRename` is on, which is Claude Code's default. Turn the badge off for good with
+`/mochi badge off`.
+
 ## Controls
 
 Focus the pane (`ctrl+x tab`, or click it) and press:
@@ -267,6 +286,10 @@ Commands:
 /mascot achievements           badges earned and how to earn the rest
 /mascot meter                  the session meter in full, with notes for your provider
 /mascot files [on|off]         show or hide the file tree (on by default)
+/mascot badge                  this session's color and title
+/mascot badge on|off           tint the tab and add the emoji title, or stop (on by default)
+/mascot badge color <name>     plum, harbor, pine, claret, rust, moss, walnut, graphite
+/mascot badge title <text>     pin this session's title; /mascot badge auto follows the topic again
 /mascot outfits                list outfits
 /mascot outfit <name>          classic, wizard, pirate, party, shades, crown
 /mascot sound on|off           8-bit sound effects (off by default)
@@ -286,14 +309,18 @@ Commands:
   repository's fsmonitor command turned off. File and branch names are drawn with control
   characters masked. Clicking a file runs your editor with that file's path. Commands run by
   argument list, never through a shell, and only for files that resolve inside the project or
-  inside a worktree git lists for it.
+  inside a worktree git lists for it. The session badge runs `ps` to find this session's tab,
+  `osascript` to read and set Terminal.app tab colors (with every value passed as an argument,
+  never as script text), and `grep` to read Claude Code's topic from the session transcript. Titles
+  it sets are drawn from that topic or your own words, with control characters removed.
 - **Secrets are masked on screen.** Commands shown in the HUD have tokens, auth headers, URL
   credentials and secret-looking env vars or flags replaced with `••••`. This affects the display
   only; your commands run unchanged.
 - **Never in the way.** Every hook passes the tool call through untouched, even if Mochi's own
   bookkeeping fails, and all scoring happens after the result is already on its way back.
 - **What is saved.** Level, XP, outfit, sound setting, the file tree switch, mood, energy and
-  badges persist in Claude Code's per-plugin store. The session journal, missions, meter and the
+  badges persist in Claude Code's per-plugin store, and so do the session badge switch and, per
+  session, its color, a pinned title and the titles it set (the 300 most recent sessions). The session journal, missions, meter and the
   tree's touched files reset every session.
 
 ## Development
@@ -338,6 +365,7 @@ state and the pane.
 | `hud.ts` · `mascot.ts` · `redact.ts` | HUD layout, labels, secret masking |
 | `fileTree.ts` · `editor.ts` | file tree: git parsing, the focused tree and its window; the editor launcher |
 | `meter.ts` · `meterRows.ts` · `meterAlerts.ts` · `meterReport.ts` | session meter: provider detection and figures, HUD rows, alerts, `/mascot meter` |
+| `badge.ts` · `badgePalette.ts` · `badgeTitle.ts` · `badgeTty.ts` · `badgeTerminal.ts` · `badgeRecords.ts` · `badgeCommand.ts` | session badge: lifecycle, colors, titles, finding the tab, Terminal.app, saved records, `/mascot badge` |
 
 ## License
 
