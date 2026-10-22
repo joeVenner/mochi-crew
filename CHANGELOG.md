@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-22
+
+### Fixed
+
+- After `/restart`, `/mochi badge color` and `on` said no Terminal.app tab could be painted, and
+  the tab no longer followed color changes. `/restart` ends the session and then carries it on in
+  the same process, and the badge kept treating it as ended. A prompt, a command or a new start now
+  brings it back.
+
 ## [1.5.1] - 2026-10-22
 
 ### Fixed
