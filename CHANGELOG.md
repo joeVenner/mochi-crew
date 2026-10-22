@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-22
+
+### Fixed
+
+- The session badge's emoji title now shows on Windows. It looked for the topic only in
+  `/`-rooted transcript paths and with `grep`, so a Windows session never got one; it now accepts
+  `C:\` paths and reads the transcript file where `grep` is missing.
+
 ## [1.5.0] - 2026-10-21
 
 ### Added

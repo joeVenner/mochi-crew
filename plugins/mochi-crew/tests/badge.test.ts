@@ -6,7 +6,7 @@ import type { Rgb16 } from '../hooks/badgePalette'
 import { newRecord, parseRecord, rememberSet, withoutPinned } from '../hooks/badgeRecords'
 import { isTranscriptPath } from '../hooks/badge'
 import { parseTabs } from '../hooks/badgeTerminal'
-import { MAX_TITLE_LENGTH, decideTitle, latestAiTitle, sanitizeLabel, sanitizeTitle, stripBadge } from '../hooks/badgeTitle'
+import { MAX_TITLE_LENGTH, decideTitle, latestAiTitle, sanitizeLabel, sanitizeTitle, stripBadge, topicFromTranscript } from '../hooks/badgeTitle'
 import { findControllingTty, isTerminalTty, parseProcessTable, processTableArgv } from '../hooks/badgeTty'
 
 const CLEAR_DARK: Rgb16 = [6447, 7462, 10000]
@@ -135,6 +135,20 @@ describe('badge titles', () => {
     expect(isTranscriptPath('/Users/a/.claude/projects/-Users-a-x/0f1e.jsonl')).toBe(true)
     expect(isTranscriptPath('/Users/a/.claude/projects/../../etc/x.jsonl')).toBe(false)
     expect(isTranscriptPath('/tmp/x.jsonl')).toBe(false)
+  })
+
+  test('accepts Windows transcript paths too', () => {
+    expect(isTranscriptPath('C:\\Users\\a\\.claude\\projects\\C--Users-a-x\\0f1e.jsonl')).toBe(true)
+    expect(isTranscriptPath('D:/Users/a/.claude/projects/p/0f1e.jsonl')).toBe(true)
+    expect(isTranscriptPath('C:\\Users\\a\\.claude\\projects\\..\\..\\x.jsonl')).toBe(false)
+    expect(isTranscriptPath('relative\\projects\\p\\x.jsonl')).toBe(false)
+  })
+
+  test('finds the first topic row in a whole transcript, with Windows line endings too', () => {
+    const transcript = ['{"type":"user","message":"hi"}', '{"type":"ai-title","aiTitle":"Fix login","sessionId":"s"}', '{"type":"ai-title","aiTitle":"Later"}'].join('\r\n')
+    expect(topicFromTranscript(transcript)).toBe('Fix login')
+    expect(topicFromTranscript('{"type":"user"}\n')).toBeUndefined()
+    expect(topicFromTranscript(`{"type":"ai-title","aiTitle":"${'x'.repeat(20_000)}"}`)).toBeUndefined()
   })
 
   const base = { current: undefined, recentSet: [] as string[], pinned: undefined, aiTitle: undefined, tint: plum, isOff: false }

@@ -16,7 +16,7 @@ import type { Rgb16, Tint } from './badgePalette'
 import { loadRecord, newRecord, rememberSet, saveRecord, withoutPinned } from './badgeRecords'
 import type { BadgeRecord } from './badgeRecords'
 import { readTabs, restoreTab, tintTab } from './badgeTerminal'
-import { MAX_RENAME_LENGTH, decideTitle, latestAiTitle, sanitizeLabel } from './badgeTitle'
+import { MAX_RENAME_LENGTH, MAX_TOPIC_ROW_LENGTH, TOPIC_ROW_MARK, decideTitle, latestAiTitle, sanitizeLabel, topicFromTranscript } from './badgeTitle'
 import { findControllingTty, parseProcessTable, processTableArgv } from './badgeTty'
 
 // The values the session holds for the badge; they outlive a hot reload.
@@ -38,8 +38,8 @@ const COLLISION_CHECK_DELAY_MS = 2_500
  * this prompt, and the next one tries again.
  */
 const START_WAIT_MS = 2_000
-/** A topic row is short; anything longer is not parsed. */
-const MAX_TOPIC_ROW_BYTES = 16_384
+/** The largest transcript read whole, where there is no grep (Windows). */
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 
 /**
  * What this load of the module knows. A hot reload starts it over; what must outlive one
@@ -50,6 +50,8 @@ const runtime: {
   paintTriedFor: string | undefined
   /** Whether this load saw an interactive session start; a `-p` run never does, so it is never badged. */
   hasStarted: boolean
+  /** Claude Code's topic per session id, once found: it never changes, so the transcript is read until then only. */
+  topics: Map<string, string>
   isEnded: boolean
   hasWarnedAutomation: boolean
   tabLookups: number
@@ -57,6 +59,7 @@ const runtime: {
 } = {
   paintTriedFor: undefined,
   hasStarted: false,
+  topics: new Map(),
   isEnded: false,
   hasWarnedAutomation: false,
   tabLookups: 0,
@@ -254,20 +257,46 @@ export async function endBadge($: EngineInterface, sessionId: string, reason: st
   await unpaint($)
 }
 
-/** True for a transcript path of the shape Claude Code writes: `/…/projects/<project>/<session>.jsonl`. */
+const isWindowsPath = (path: string): boolean => /^[A-Za-z]:[\\/]/.test(path)
+
+/**
+ * True for a transcript path of the shape Claude Code writes, on macOS and Linux
+ * (`/…/projects/<project>/<session>.jsonl`) or Windows (`C:\…\projects\<project>\<session>.jsonl`).
+ */
 export const isTranscriptPath = (path: string): boolean =>
-  path.startsWith('/') && !path.split('/').includes('..') && /\/projects\/[^/]+\/[^/]+\.jsonl$/.test(path)
+  (path.startsWith('/') || isWindowsPath(path)) &&
+  !path.split(/[\\/]/).includes('..') &&
+  /[\\/]projects[\\/][^\\/]+[\\/][^\\/]+\.jsonl$/.test(path)
+
+/** Reads the whole transcript, bounded in size, for where grep is missing. */
+async function readTopicFromFile($: EngineInterface, path: string): Promise<string | undefined> {
+  const stat = await $.fs.stat(path)
+  if (stat.kind !== 'file' || stat.size > MAX_TRANSCRIPT_BYTES) return undefined
+  const text = await $.fs.read(path)
+  return typeof text === 'string' ? topicFromTranscript(text) : undefined
+}
 
 /**
  * Reads Claude Code's topic from the transcript. Claude Code generates it once, from the
- * first message, and repeats that same row later, so grep stops at the first one instead of
- * reading the whole file.
+ * first message, and repeats that same row later, so grep stops at the first one. Windows
+ * has no grep, so there the file is read instead; once found, the topic is kept for the
+ * rest of this load.
  */
-async function readAiTitle($: EngineInterface, transcriptPath: string): Promise<string | undefined> {
+async function readAiTitle($: EngineInterface, sessionId: string, transcriptPath: string): Promise<string | undefined> {
+  const known = runtime.topics.get(sessionId)
+  if (known) return known
   if (!isTranscriptPath(transcriptPath)) return undefined
-  const { exitCode, stdout } = await $.process.run(['/usr/bin/grep', '-F', '-m', '1', '"type":"ai-title"', '--', transcriptPath], { timeoutMs: 5_000 })
-  // grep exits 1 when nothing matched: no topic yet.
-  return exitCode === 0 && stdout.length <= MAX_TOPIC_ROW_BYTES ? latestAiTitle(stdout) : undefined
+  let topic: string | undefined
+  if (isWindowsPath(transcriptPath)) {
+    topic = await readTopicFromFile($, transcriptPath)
+  } else {
+    const ran = await $.process.run(['/usr/bin/grep', '-F', '-m', '1', TOPIC_ROW_MARK, '--', transcriptPath], { timeoutMs: 5_000 }).catch(() => undefined)
+    // grep exits 1 when nothing matched (no topic yet), and above 1 when it could not read.
+    if (ran === undefined || ran.exitCode > 1) topic = await readTopicFromFile($, transcriptPath)
+    else if (ran.exitCode === 0 && ran.stdout.length <= MAX_TOPIC_ROW_LENGTH) topic = latestAiTitle(ran.stdout)
+  }
+  if (topic) runtime.topics.set(sessionId, topic)
+  return topic
 }
 
 export type PromptInput = {
@@ -291,7 +320,7 @@ export async function badgeTitleFor($: EngineInterface, input: PromptInput): Pro
   if (!base) return undefined
   let aiTitle: string | undefined
   try {
-    aiTitle = await readAiTitle($, input.transcriptPath)
+    aiTitle = await readAiTitle($, input.sessionId, input.transcriptPath)
   } catch (error) {
     logDebug($, `could not read the topic: ${describeError(error)}`)
   }

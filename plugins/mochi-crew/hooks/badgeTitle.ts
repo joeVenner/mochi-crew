@@ -12,6 +12,10 @@ export const MAX_TITLE_LENGTH = 50
 export const MAX_RENAME_LENGTH = 80
 /** Longest raw text looked at: every regex below then runs on bounded input. */
 const MAX_RAW_LENGTH = 256
+/** A topic row is short; a longer one is not parsed. */
+export const MAX_TOPIC_ROW_LENGTH = 16_384
+/** What every topic row of a transcript holds. */
+export const TOPIC_ROW_MARK = '"type":"ai-title"'
 
 // Controls, format characters (bidi, zero-width), private-use, unassigned and lone
 // surrogates, plus the blank-looking letters that pass for text.
@@ -71,6 +75,15 @@ export const latestAiTitle = (lines: string): string | undefined => {
     }
   }
   return undefined
+}
+
+/** Claude Code's topic from a whole transcript: the first topic row, which is all grep would read. */
+export const topicFromTranscript = (text: string): string | undefined => {
+  const at = text.indexOf(TOPIC_ROW_MARK)
+  if (at < 0) return undefined
+  const end = text.indexOf('\n', at)
+  const row = text.slice(text.lastIndexOf('\n', at) + 1, end < 0 ? text.length : end)
+  return row.length <= MAX_TOPIC_ROW_LENGTH ? latestAiTitle(row) : undefined
 }
 
 export type TitleInput = {

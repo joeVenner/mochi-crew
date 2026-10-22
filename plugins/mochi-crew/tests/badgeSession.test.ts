@@ -23,12 +23,16 @@ type Host = {
   /** What the tint script answers: `missing` stands for a tab Terminal no longer has. */
   tintAnswer: string
   termProgram: string
+  /** The whole transcript, as `fs.read` answers it. */
+  transcript: string
+  /** True for a machine with no `/usr/bin/grep`. */
+  isGrepMissing: boolean
   /** SSH_CONNECTION, set for a session reached over ssh. */
   ssh: string | undefined
 }
 
 const host = (on: On, stored: Readonly<Record<string, unknown>> = {}): Host => {
-  const machine: Host = { runs: [], sessionId: 'sess-1', aiTitles: '', otherTabs: [], tintAnswer: 'ok', termProgram: 'Apple_Terminal', ssh: undefined }
+  const machine: Host = { runs: [], sessionId: 'sess-1', aiTitles: '', otherTabs: [], tintAnswer: 'ok', termProgram: 'Apple_Terminal', transcript: '', isGrepMissing: false, ssh: undefined }
   const ok = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '' } as never })
   mock.clock(on)
   mock.store(on, stored)
@@ -43,6 +47,11 @@ const host = (on: On, stored: Readonly<Record<string, unknown>> = {}): Host => {
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.authorize', () => ({ value: { handle: 'test-handle', kind: 'api-key' } }))
   on('fs.list', () => ({ value: [] }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: machine.transcript.length, mtimeMs: 0, isLink: false } as never }))
+  on('fs.read', ($, e) => {
+    machine.runs.push(['fs.read', e.path])
+    return { value: machine.transcript as never }
+  })
   on('classic.UserPromptSubmit', () => ({}))
   on('process.run', ($, e) => {
     const argv = [...e.argv]
@@ -56,7 +65,10 @@ const host = (on: On, stored: Readonly<Record<string, unknown>> = {}): Host => {
       if (script.includes('set out to ""')) return ok([`${TTY}\t6447,7462,10000\tClear Dark`, ...machine.otherTabs].join('\n'))
       return ok(script.includes('set background color') ? machine.tintAnswer : 'ok')
     }
-    if (argv[0] === '/usr/bin/grep') return machine.aiTitles ? ok(machine.aiTitles) : ok('', 1)
+    if (argv[0] === '/usr/bin/grep') {
+      if (machine.isGrepMissing) throw new Error('ENOENT: /usr/bin/grep')
+      return machine.aiTitles ? ok(machine.aiTitles) : ok('', 1)
+    }
     return ok('')
   })
   return machine
@@ -81,7 +93,36 @@ const prompt = ($: $, machine: Host, sessionTitle?: string) =>
 
 const mochi = (args: string) => ({ command: 'mochi', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const)
 
+const WINDOWS_TRANSCRIPT = 'C:\\Users\\someone\\.claude\\projects\\C--repo\\sess-1.jsonl'
+
 describe('session badge', () => {
+  test('on Windows it reads the topic from the transcript file, once, and titles the session', async ($, on) => {
+    const machine = host(on)
+    machine.termProgram = ''
+    await $.session.start({ cwd: 'C:\\repo', surface: 'terminal', isInteractive: true })
+    const ask = (sessionTitle?: string) =>
+      $.classic.UserPromptSubmit({ prompt: 'go', session_id: machine.sessionId, transcript_path: WINDOWS_TRANSCRIPT, session_title: sessionTitle })
+
+    expect((await ask()).sessionTitle).toBeUndefined()
+    machine.transcript = '{"type":"user"}\r\n{"type":"ai-title","aiTitle":"Fix login"}\r\n'
+    const titled = await ask()
+    expect(titled.sessionTitle).toMatch(/^\S+ Fix login$/)
+    expect((await ask(titled.sessionTitle)).sessionTitle).toBeUndefined()
+
+    const reads = machine.runs.filter(argv => argv[0] === 'fs.read')
+    expect(reads.length).toBe(2)
+    expect(machine.runs.some(argv => ['/usr/bin/grep', '/bin/ps', '/usr/bin/osascript'].includes(argv[0] ?? ''))).toBe(false)
+  })
+
+  test('where grep is missing it falls back to reading the transcript', async ($, on) => {
+    const machine = host(on)
+    machine.termProgram = 'xterm'
+    machine.isGrepMissing = true
+    machine.transcript = '{"type":"ai-title","aiTitle":"Topic"}\n'
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    expect((await prompt($, machine)).sessionTitle).toMatch(/^\S+ Topic$/)
+  })
+
   test('tints its own tab, with no shell, in a color no other tab wears', async ($, on) => {
     const machine = host(on)
     machine.otherTabs = PALETTE.slice(1).map((tint, index) => `/dev/ttys10${index}\t${hexToRgb16(tint.hex).join(',')}\tClear Dark`)
