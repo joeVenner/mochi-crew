@@ -426,6 +426,9 @@ const cycleOutfit = async ($: EngineInterface): Promise<string> => {
   return runMascotCommand($, `outfit ${next}`)
 }
 
+/** The pane's place button: Mochi moves to the next place, and the session takes that place's color. */
+const cyclePlace = ($: EngineInterface): Promise<string> => runBadgeCommand($, 'place next')
+
 const toggleSound = async ($: EngineInterface): Promise<string> =>
   runMascotCommand($, (await read($, isSoundOn)) ? 'sound off' : 'sound on')
 
@@ -1688,6 +1691,7 @@ export const register: Register = on => {
           <Button key="feed" hotkey="f" plain label="feed" onPress={() => void pressButton($, () => react($, 'feed'))} />
           <Button key="dance" hotkey="d" plain label="dance" onPress={() => void pressButton($, () => react($, 'dance'))} />
           <Button key="outfit" hotkey="o" plain label="outfit" onPress={() => void pressButton($, () => cycleOutfit($))} />
+          <Button key="place" hotkey="b" plain label="place" onPress={() => void pressButton($, () => cyclePlace($))} />
           <Button key="sound" hotkey="s" plain label={soundOn ? 'mute' : 'sound'} onPress={() => void pressButton($, () => toggleSound($))} />
           <Button key="files" hotkey="t" plain label="files" onPress={() => void pressButton($, () => runMascotCommand($, 'files'))} />
         </Box>

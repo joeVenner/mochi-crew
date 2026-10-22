@@ -1,6 +1,6 @@
 {
   "name": "mochi-crew",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "A pixel-art cat companion that lives in a side pane and reacts to your real Claude Code session: edits, commands, subagents, turns, tests and bugs, with XP, missions, a session journal, and a session meter for model, context, prompt cache and limits or cost, and a live file tree of where Claude is working, plus a session badge that gives each session its own place for Mochi's desk, tints its Terminal tab and puts a matching emoji in its title.",
   "author": { "name": "joeVenner", "url": "https://github.com/joeVenner" },
   "homepage": "https://github.com/joeVenner/mochi-crew",

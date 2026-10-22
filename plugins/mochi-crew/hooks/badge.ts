@@ -11,7 +11,7 @@ import type { EngineInterface } from 'claude-code'
 
 import type { BadgeTab } from '../types'
 import { BADGE_USAGE, describePlaces, describeStatus, parseBadgeCommand } from './badgeCommand'
-import { PALETTE, findTint, hexToRgb16, isSameRgb, pickTint } from './badgePalette'
+import { DEFAULT_TINT, PALETTE, findTint, hexToRgb16, isSameRgb, pickTint } from './badgePalette'
 import type { Rgb16, Tint } from './badgePalette'
 import { loadRecord, newRecord, rememberSet, saveRecord, withoutPinned } from './badgeRecords'
 import type { BadgeRecord } from './badgeRecords'
@@ -401,6 +401,16 @@ export async function runBadgeCommand($: EngineInterface, args: string): Promise
       return 'Following Claude Code\'s own topic again, from your next prompt.'
     case 'places':
       return `${describePlaces(record.tint)}\nPick one with /mochi place <name>; its color comes with it.`
+    case 'next': {
+      if (!isOn) return 'The session badge is off: /mochi badge on brings the places back.'
+      // From the session's own record, so the first press moves on from the place Mochi is really in.
+      const next = PALETTE[(PALETTE.findIndex(tint => tint.id === record.tint) + 1) % PALETTE.length] ?? DEFAULT_TINT
+      await save({ ...record, tint: next.id })
+      const isPainted = await paint($, next)
+      // The button's toast stays short: outside Terminal.app the place is the change, so no tab note.
+      const note = isPainted || !(await isAppleTerminal($)) ? '' : ' The tab could not be painted.'
+      return `Mochi moved to the ${next.place} (${next.emoji} ${next.name.toLowerCase()}).${note}`
+    }
     case 'help':
       return BADGE_USAGE
   }

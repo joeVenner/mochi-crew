@@ -11,6 +11,8 @@ export type BadgeCommand =
   | { readonly kind: 'title'; readonly text: string }
   | { readonly kind: 'auto' }
   | { readonly kind: 'places' }
+  /** The next place in the palette's order, with its color: the pane's place button. */
+  | { readonly kind: 'next' }
   | { readonly kind: 'help' }
 
 export const BADGE_USAGE = [
@@ -19,6 +21,7 @@ export const BADGE_USAGE = [
   '  /mochi badge on|off          tint the tab, move Mochi and add the emoji title, or stop (saved)',
   `  /mochi badge color <name>    ${PALETTE.map(tint => tint.id).join(', ')} (or a place)`,
   `  /mochi place <name>          ${PALETTE.map(tint => tint.place).join(', ')} (the same as its color)`,
+  '  /mochi place next            the next place (the pane\'s b key)',
   '  /mochi badge title <text>    pin a title (shown from your next prompt)',
   '  /mochi badge auto            follow Claude Code\'s topic again',
 ].join('\n')
@@ -41,6 +44,7 @@ export const parseBadgeCommand = (args: string): BadgeCommand => {
     }
     case 'place': {
       if (!name) return { kind: 'places' }
+      if (name.toLowerCase() === 'next') return { kind: 'next' }
       const tint = findTint(name)
       return tint ? { kind: 'color', tint } : { kind: 'unknown-color', name }
     }
