@@ -240,6 +240,10 @@ export function startBadge($: EngineInterface, sessionId: string): void {
   // The saved switch seeds the state once per load; after that the state is the truth, so a /clear keeps it.
   const isFirstStart = !runtime.hasStarted
   runtime.hasStarted = true
+  // A start means the session lives, even one that ended earlier in this process (/restart); paint afresh.
+  runtime.isEnded = false
+  runtime.paintTriedFor = undefined
+  runtime.tabLookups = 0
   runtime.ready = (async () => {
     if (isFirstStart) {
       const saved = await $.store.get(SWITCH_KEY).catch(() => undefined)
@@ -308,6 +312,8 @@ export type PromptInput = {
 /** Decides this prompt's title, or undefined to leave Claude Code's as it is. */
 export async function badgeTitleFor($: EngineInterface, input: PromptInput): Promise<string | undefined> {
   if (!runtime.hasStarted || !(await within($, runtime.ready, START_WAIT_MS))) return undefined
+  // A prompt means the session goes on, even after a session.end that kept the process (/restart).
+  runtime.isEnded = false
   if (!(await read($, isBadgeOn))) {
     // Off: only take the emoji back out of a title the badge wrote.
     const record = await loadRecord($, input.sessionId)
@@ -340,6 +346,8 @@ export async function badgeTitleFor($: EngineInterface, input: PromptInput): Pro
 /** Answers `/mochi badge <args>`. */
 export async function runBadgeCommand($: EngineInterface, args: string): Promise<string> {
   await within($, runtime.ready, START_WAIT_MS)
+  // A command means the session goes on, even after a session.end that kept the process (/restart).
+  runtime.isEnded = false
   const sessionId = await $.session.id()
   const isOn = await read($, isBadgeOn)
   // While off a session may have no color yet: one is picked blind, and checked against the other tabs once switched on.
