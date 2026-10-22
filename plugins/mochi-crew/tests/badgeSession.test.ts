@@ -156,6 +156,23 @@ describe('session badge', () => {
     expect(restores(machine).at(-1)?.slice(3)).toEqual([TTY, 'Clear Dark', ...rgbOf('moss')])
   })
 
+  test('after /restart ends the session and carries it on in the same process, the tab still paints', async ($, on) => {
+    const machine = host(on)
+    await start($, machine)
+    await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { id: 'sess-1' } })
+    expect(restores(machine).length).toBe(1)
+
+    // No session.start may follow: the same session goes on.
+    const colored = await $.command.run(mochi('badge color moss'))
+    expect(colored.text).not.toContain('could be painted')
+    expect(tints(machine).at(-1)?.slice(4)).toEqual(rgbOf('moss'))
+
+    // And when it does start again, the start repaints too.
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await settle(() => tints(machine).length > 2)
+    expect(tints(machine).at(-1)?.slice(4)).toEqual(rgbOf('moss'))
+  })
+
   test('/clear hands the color on to the new session id', async ($, on) => {
     const machine = host(on)
     await start($, machine)
