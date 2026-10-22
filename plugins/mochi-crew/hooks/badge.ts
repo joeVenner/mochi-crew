@@ -10,7 +10,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
 import type { BadgeTab } from '../types'
-import { BADGE_USAGE, describeStatus, parseBadgeCommand } from './badgeCommand'
+import { BADGE_USAGE, describePlaces, describeStatus, parseBadgeCommand } from './badgeCommand'
 import { PALETTE, findTint, hexToRgb16, isSameRgb, pickTint } from './badgePalette'
 import type { Rgb16, Tint } from './badgePalette'
 import { loadRecord, newRecord, rememberSet, saveRecord, withoutPinned } from './badgeRecords'
@@ -357,7 +357,13 @@ export async function runBadgeCommand($: EngineInterface, args: string): Promise
     await saveRecord($, sessionId, next)
     await showBadge($, sessionId, next)
   }
-  const tabNote = (isPainted: boolean): string => (isPainted ? '' : ' No Terminal.app tab could be painted, so only the title changes.')
+  // Asked only after a paint that did not land: the other commands never need it.
+  const tabNote = async (isPainted: boolean): Promise<string> => {
+    if (isPainted) return ''
+    return (await isAppleTerminal($))
+      ? ' No Terminal.app tab could be painted, so only Mochi\'s place and the title change.'
+      : ' Tab colors need macOS Terminal.app; here Mochi\'s place and the title show it.'
+  }
 
   switch (command.kind) {
     case 'status':
@@ -373,16 +379,17 @@ export async function runBadgeCommand($: EngineInterface, args: string): Promise
       const adopted = (await adoptSession($, sessionId)) ?? record
       const tint = findTint(adopted.tint)
       const isPainted = tint ? await paint($, tint) : false
-      return `Badge on${note}.${tabNote(isPainted)}`
+      return `Badge on${note}.${await tabNote(isPainted)}`
     }
     case 'color': {
       await save({ ...record, tint: command.tint.id })
-      if (!isOn) return `Color set to ${command.tint.emoji} ${command.tint.name}. The badge is off: /mochi badge on shows it.`
+      const named = `${command.tint.emoji} ${command.tint.name} · ${command.tint.place}`
+      if (!isOn) return `Set to ${named}. The badge is off: /mochi badge on shows it.`
       const isPainted = await paint($, command.tint)
-      return `Color set to ${command.tint.emoji} ${command.tint.name}. The title's emoji changes on your next prompt.${tabNote(isPainted)}`
+      return `Set to ${named}. The title's emoji changes on your next prompt.${await tabNote(isPainted)}`
     }
     case 'unknown-color':
-      return `No color named "${sanitizeLabel(command.name, 24) ?? ''}". Pick one of: ${PALETTE.map(tint => tint.id).join(', ')}.`
+      return `No color or place named "${sanitizeLabel(command.name, 24) ?? ''}". Colors: ${PALETTE.map(tint => tint.id).join(', ')}. Places: ${PALETTE.map(tint => tint.place).join(', ')}.`
     case 'title': {
       const pinned = sanitizeLabel(command.text, MAX_RENAME_LENGTH)
       if (!pinned) return 'That title has no letters or digits once control characters are removed.'
@@ -392,6 +399,8 @@ export async function runBadgeCommand($: EngineInterface, args: string): Promise
     case 'auto':
       await save(withoutPinned(record))
       return 'Following Claude Code\'s own topic again, from your next prompt.'
+    case 'places':
+      return `${describePlaces(record.tint)}\nPick one with /mochi place <name>; its color comes with it.`
     case 'help':
       return BADGE_USAGE
   }

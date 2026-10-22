@@ -13,7 +13,7 @@ and waves when it's your turn. Subagents join as a crew of kittens in role costu
 green tests and shipped turns earn XP, missions and badges. A session meter under the HUD shows
 your model, context fill, prompt-cache hit rate, and plan limits or cost, and a file tree shows
 where in the project Claude is working. With many sessions open, the session badge gives each
-Terminal tab its own color and a matching emoji in its title.
+session its own place for Mochi's desk, color for its Terminal tab and emoji in its title.
 
 [Install](#install) · [What it does](#what-it-does) · [The crew](#the-crew) · [Session meter](#session-meter) · [File tree](#file-tree) · [Session badge](#session-badge) · [Controls](#controls) · [Privacy](#privacy-and-safety) · [Development](#development)
 
@@ -247,7 +247,22 @@ such as `files   editing hooks/fileTree.ts`. Turn it off with `t`, the `files` b
 
 ## Session badge
 
-With several sessions open, each one gets its own color so you can pick the right tab at a glance:
+With several sessions open, each one gets its own color and place, so you can pick the right one
+at a glance:
+
+- **Place.** Mochi's desk stands somewhere different in each session: the house, a mountain, the
+  gym, a forest, the beach, the desert, a space station or a library. The window shows the place
+  (with your local sky), a prop stands in the bookshelf's spot when the pane is wide enough for
+  one, and the floor takes the place's color. This works in every terminal, Windows Terminal included. Each place goes with one color:
+
+  | Color | Place | | Color | Place |
+  |---|---|---|---|---|
+  | 🟣 plum | space | | 🟠 rust | desert |
+  | 🔵 harbor | beach | | 🟡 moss | mountain |
+  | 🟢 pine | forest | | 🟤 walnut | library |
+  | 🔴 claret | house | | ⚫ graphite | gym |
+
+  <img src="docs/images/places.png" alt="Mochi's desk in each place: house, mountain, gym, forest, beach, desert, space and library" width="100%">
 
 - **Tab tint.** In macOS Terminal.app the session's tab gets a dark background from eight colors
   (plum, harbor, pine, claret, rust, moss, walnut, graphite). Mochi picks the color the fewest other
@@ -259,10 +274,11 @@ With several sessions open, each one gets its own color so you can pick the righ
   Claude Code writes that topic once; change it with `/rename` or `/mochi badge title`. A
   `/rename` always wins and Mochi only adds the emoji.
 
-The title works in any terminal; the tint needs Terminal.app. The first time, macOS may ask to let
-Claude Code control Terminal: allow it for the tint. The emoji reaches the tab only while
+The place and the title work in any terminal; the tint needs Terminal.app, as no other terminal
+lets a plugin recolor an open tab. The first time, macOS may ask to let Claude Code control
+Terminal: allow it for the tint. The emoji reaches the tab only while
 `terminalTitleFromRename` is on, which is Claude Code's default. Turn the badge off for good with
-`/mochi badge off`.
+`/mochi badge off`, which also brings Mochi back to the house.
 
 ## Controls
 
@@ -290,6 +306,7 @@ Commands:
 /mascot badge                  this session's color and title
 /mascot badge on|off           tint the tab and add the emoji title, or stop (on by default)
 /mascot badge color <name>     plum, harbor, pine, claret, rust, moss, walnut, graphite
+/mascot place [<name>]         list the places, or move Mochi (its color comes with it)
 /mascot badge title <text>     pin this session's title; /mascot badge auto follows the topic again
 /mascot outfits                list outfits
 /mascot outfit <name>          classic, wizard, pirate, party, shades, crown
@@ -360,7 +377,7 @@ state and the pane.
 | File | Responsibility |
 |---|---|
 | `register.tsx` | hooks, state, animation ticker, pane and HUD, session meter and file tree wiring |
-| `canvas.ts` · `world.ts` · `sprite.ts` · `workerArt.ts` | pixel canvas, the room, Mochi, the kittens |
+| `canvas.ts` · `world.ts` · `sprite.ts` · `workerArt.ts` | pixel canvas, the room and its places, Mochi, the kittens |
 | `behavior.ts` | walking, idle routines, sleep |
 | `crew.ts` · `roles.ts` | subagent workers and their costumes |
 | `turn.ts` · `progress.ts` · `game.ts` | turns, fair per-turn XP, levels |

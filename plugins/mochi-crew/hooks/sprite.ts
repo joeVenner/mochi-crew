@@ -9,6 +9,7 @@ import { OUTFITS } from './outfits'
 import { isHandingOff, isThinking } from './turn'
 import { WORKER_WIDTH, drawWorker, drawWorkerOverlay } from './workerArt'
 import { GROUND_Y, SCENE_HEIGHT, drawWorld, scatter } from './world'
+import type { PlaceId } from './world'
 
 /** How long the "done" pose shows before the cat settles back to idle. */
 export const DONE_MS = 3000
@@ -439,6 +440,8 @@ export type SceneInput = {
   bug: Bug | null
   /** The main loop's turn, if one has started this session. */
   turn: Turn | null
+  /** Where the desk stands (the session badge's place); the house when absent. */
+  place?: PlaceId
 }
 
 /**
@@ -446,12 +449,12 @@ export type SceneInput = {
  * as many worker kittens as the width has slots for (up to MAX_VISIBLE_WORKERS), in a
  * front row: their head overlays behind Mochi, their bodies in front.
  */
-export const sceneFor = ({ activity, tick, workers, now, outfit, width, hour, feeling, reaction, bug, turn }: SceneInput): Canvas => {
+export const sceneFor = ({ activity, tick, workers, now, outfit, width, hour, feeling, reaction, bug, turn, place }: SceneInput): Canvas => {
   const canvas = createCanvas(width, SCENE_HEIGHT)
   const x = mascotXAt(activity, now, width)
   const isWalking = isMascotWalking(activity, now, width)
   const isTyping = activity.kind === 'editing' && !isWalking
-  drawWorld(canvas, tick, hour, isTyping)
+  drawWorld(canvas, tick, hour, isTyping, place)
   const slots = workerSlots(width)
   const placed = workers.slice(0, slots.length).map((worker, slot) => ({ worker, left: workerX(worker, slots[slot] ?? width, now, width) }))
   placed.forEach(({ worker, left }) => drawWorkerOverlay(canvas, worker, left, WORKER_FEET_Y, tick, now))

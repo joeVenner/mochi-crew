@@ -4,6 +4,7 @@ import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer
 import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
+import { placeFor } from './badgePalette'
 import { badgeTitleFor, endBadge, runBadgeCommand, startBadge } from './badge'
 import { mascotXAt, settle } from './behavior'
 import type { QuipEvent } from './events'
@@ -78,6 +79,12 @@ const activity = atom({ plugin: 'mochi-crew', key: 'activity' } as const, IDLE)
 const stats = atom({ plugin: 'mochi-crew', key: 'stats' } as const, EMPTY_STATS)
 const workers = atom({ plugin: 'mochi-crew', key: 'workers' } as const, NO_WORKERS)
 const outfit = atom({ plugin: 'mochi-crew', key: 'outfit' } as const, DEFAULT_OUTFIT)
+/**
+ * The session badge's tint and switch (written by badge.ts): they pick the place Mochi's desk
+ * stands in. Declared again here because the plugin validator wants each atom in the file that reads it.
+ */
+const badge = atom({ plugin: 'mochi-crew', key: 'badge' } as const, null)
+const isBadgeOn = atom({ plugin: 'mochi-crew', key: 'isBadgeOn' } as const, true)
 const isSoundOn = atom({ plugin: 'mochi-crew', key: 'isSoundOn' } as const, false)
 const care = atom({ plugin: 'mochi-crew', key: 'care' } as const, FRESH_CARE)
 const NO_REACTION: Reaction | null = null
@@ -302,8 +309,8 @@ const frameInput = async (
   current: MascotActivity,
   crew: readonly Worker[],
 ): Promise<SceneInput> => {
-  const [worn, wellbeing, playing, loose, latestTurn] = await Promise.all([
-    read($, outfit), read($, care), read($, reaction), read($, bug), read($, turn),
+  const [worn, wellbeing, playing, loose, latestTurn, badged, isBadged] = await Promise.all([
+    read($, outfit), read($, care), read($, reaction), read($, bug), read($, turn), read($, badge), read($, isBadgeOn),
   ])
   return {
     activity: current,
@@ -317,6 +324,7 @@ const frameInput = async (
     reaction: activeReaction(playing, now),
     bug: visibleBug(loose, now),
     turn: latestTurn,
+    place: placeFor(badged?.tintId, isBadged),
   }
 }
 
@@ -767,6 +775,8 @@ const runMascotCommand = async ($: EngineInterface, args: string): Promise<strin
   // `badge` takes free text (a title), so it is read by its own parser.
   const [verb = ''] = args.trim().split(/\s+/)
   if (verb.toLowerCase() === 'badge') return runBadgeCommand($, args.trim().slice(verb.length))
+  // `place <name>` is the badge's place under its own name: picking a place picks its color.
+  if (verb.toLowerCase() === 'place') return runBadgeCommand($, args.trim())
   const command = parseMascotCommand(args)
   switch (command.kind) {
     case 'open':
@@ -1375,7 +1385,7 @@ export const register: Register = on => {
       await $.command.register({
         name,
         description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, set the session badge, change outfit, toggle sound',
-        argumentHint: '[journal | missions | achievements | meter | files [on|off] | badge [on|off|color <name>|title <text>|auto] | outfits | outfit <name> | sound on|off]',
+        argumentHint: '[journal | missions | achievements | meter | files [on|off] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]',
       })
     }
     void $.ui.open({ id: PANE, title: TITLE })
