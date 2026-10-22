@@ -292,6 +292,7 @@ Focus the pane (`ctrl+x tab`, or click it) and press:
 | `o` | next outfit |
 | `s` | sound on or off |
 | `t` | file tree on or off |
+| `b` | next place for Mochi's desk (the session's color comes with it) |
 
 Commands:
 
@@ -307,6 +308,7 @@ Commands:
 /mascot badge on|off           tint the tab and add the emoji title, or stop (on by default)
 /mascot badge color <name>     plum, harbor, pine, claret, rust, moss, walnut, graphite
 /mascot place [<name>]         list the places, or move Mochi (its color comes with it)
+/mascot place next             the next place, as the pane's b key does
 /mascot badge title <text>     pin this session's title; /mascot badge auto follows the topic again
 /mascot outfits                list outfits
 /mascot outfit <name>          classic, wizard, pirate, party, shades, crown

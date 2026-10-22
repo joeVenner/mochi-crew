@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-22
+
+### Added
+
+- A `place` button in the pane, beside `outfit`: press `b` (or click it) to move Mochi to the
+  next place, and the session's color follows. `/mochi place next` does the same from the prompt.
+  With the badge off it says so and changes nothing.
+
 ## [1.6.0] - 2026-10-22
 
 ### Added
