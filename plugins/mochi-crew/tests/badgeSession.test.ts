@@ -27,18 +27,24 @@ type Host = {
   transcript: string
   /** True for a machine with no `/usr/bin/grep`. */
   isGrepMissing: boolean
+  /** Every toast shown, oldest first. */
+  readonly toasts: string[]
   /** SSH_CONNECTION, set for a session reached over ssh. */
   ssh: string | undefined
 }
 
 const host = (on: On, stored: Readonly<Record<string, unknown>> = {}): Host => {
-  const machine: Host = { runs: [], sessionId: 'sess-1', aiTitles: '', otherTabs: [], tintAnswer: 'ok', termProgram: 'Apple_Terminal', transcript: '', isGrepMissing: false, ssh: undefined }
+  const machine: Host = { runs: [], sessionId: 'sess-1', aiTitles: '', otherTabs: [], tintAnswer: 'ok', termProgram: 'Apple_Terminal', transcript: '', isGrepMissing: false, toasts: [], ssh: undefined }
   const ok = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '' } as never })
   mock.clock(on)
   mock.store(on, stored)
   on('env.get', ($, e) => ({ value: e.name === 'TERM_PROGRAM' ? machine.termProgram : e.name === 'SSH_CONNECTION' ? machine.ssh : undefined }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.log', () => ({ value: undefined }))
+  on('ui.toast', ($, e) => {
+    machine.toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
@@ -90,6 +96,17 @@ const start = async ($: $, machine: Host): Promise<void> => {
 
 const prompt = ($: $, machine: Host, sessionTitle?: string) =>
   $.classic.UserPromptSubmit({ prompt: 'go', session_id: machine.sessionId, transcript_path: TRANSCRIPT, session_title: sessionTitle })
+
+const PANE_PROPS = { title: 'Mochi', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } as const
+
+/** Presses the pane's place button and answers the toasts it showed. */
+const pressPlace = async ($: $, machine: Host): Promise<string[]> => {
+  const before = machine.toasts.length
+  const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', component: 'Pane', requestId: 'mochi-crew', props: PANE_PROPS })
+  await ui.press({ key: 'place' })
+  await ui.unmount()
+  return machine.toasts.slice(before)
+}
 
 const mochi = (args: string) => ({ command: 'mochi', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } } as const)
 
@@ -206,6 +223,41 @@ describe('session badge', () => {
     expect(moved.text).toContain('Graphite · gym')
     expect(tints(machine).at(-1)?.slice(4)).toEqual(rgbOf('graphite'))
     expect((await $.command.run(mochi('place'))).text).toContain('[gym]')
+  })
+
+  test('the pane\'s place button moves Mochi to the next place and paints its color', async ($, on) => {
+    const machine = host(on, { 'badge:session:sess-1': { tint: 'plum' } })
+    await start($, machine)
+    const toasts = await pressPlace($, machine)
+    expect(toasts).toContain('Mochi moved to the beach (🔵 harbor).')
+    expect(tints(machine).at(-1)?.slice(4)).toEqual(rgbOf('harbor'))
+    expect((await $.command.run(mochi('place'))).text).toContain('[beach]')
+  })
+
+  test('the place button wraps from the last place to the first', async ($, on) => {
+    const machine = host(on, { 'badge:session:sess-1': { tint: 'graphite' } })
+    await start($, machine)
+    expect(await pressPlace($, machine)).toContain('Mochi moved to the space (🟣 plum).')
+    expect(tints(machine).at(-1)?.slice(4)).toEqual(rgbOf('plum'))
+  })
+
+  test('the first press moves on from the place Mochi is really in, even a freshly picked one', async ($, on) => {
+    const machine = host(on)
+    await start($, machine)
+    const picked = PALETTE.find(tint => tints(machine).at(-1)?.slice(4).join() === rgbOf(tint.id).join())
+    const expected = PALETTE[(PALETTE.indexOf(picked ?? PALETTE[0]!) + 1) % PALETTE.length]!
+    expect((await pressPlace($, machine)).some(text => text.startsWith(`Mochi moved to the ${expected.place} `))).toBe(true)
+    expect(tints(machine).at(-1)?.slice(4)).toEqual(rgbOf(expected.id))
+  })
+
+  test('while the badge is off the place button changes nothing and says so', async ($, on) => {
+    const machine = host(on, { 'badge:session:sess-1': { tint: 'plum' } })
+    await start($, machine)
+    await $.command.run(mochi('badge off'))
+    const before = tints(machine).length
+    expect((await pressPlace($, machine)).some(text => text.includes('badge is off'))).toBe(true)
+    expect(tints(machine).length).toBe(before)
+    expect((await $.command.run(mochi('place'))).text).toContain('[space]')
   })
 
   test('outside Terminal.app, a color change says the place and title show it', async ($, on) => {

@@ -69,6 +69,7 @@ describe('badge places', () => {
     expect(parseBadgeCommand('place')).toEqual({ kind: 'places' })
     expect(parseBadgeCommand('place beach')).toEqual({ kind: 'color', tint: findTint('harbor') })
     expect(parseBadgeCommand('place moon')).toEqual({ kind: 'unknown-color', name: 'moon' })
+    expect(parseBadgeCommand('place next')).toEqual({ kind: 'next' })
     expect(describePlaces('harbor')).toContain('[beach]')
     expect(describePlaces('harbor')).toContain(' gym')
   })
