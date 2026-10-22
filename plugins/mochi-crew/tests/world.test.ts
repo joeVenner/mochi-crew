@@ -2,8 +2,9 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { TRANSPARENT, createCanvas, encodeCanvas, halfBlockCell, mix, toBase64 } from '../hooks/canvas'
 import {
-  GROUND_Y, MAX_SCENE_WIDTH, MIN_SCENE_WIDTH, SCENE_HEIGHT, drawWorld, layoutFor, sceneWidthFor, screenBox, skyFor,
+  GROUND_Y, MAX_SCENE_WIDTH, MIN_SCENE_WIDTH, PLACE_IDS, SCENE_HEIGHT, drawWorld, layoutFor, sceneWidthFor, screenBox, skyFor,
 } from '../hooks/world'
+import type { PlaceId } from '../hooks/world'
 
 const DEFAULT = 0x01000000
 const FUR = 0xb9a7d6
@@ -148,5 +149,125 @@ describe('window', () => {
     // The vertical mullion's wood, read just under the frame's top edge.
     const mullion = canvas.pixels[4 * 64 + windowLeft + 6]
     expect(row(8).filter(pixel => pixel === mullion).length).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('places', () => {
+  const at = (place: PlaceId, width: number, tick: number, hour: number) => {
+    const canvas = createCanvas(width, SCENE_HEIGHT)
+    drawWorld(canvas, tick, hour, false, place)
+    return canvas.pixels
+  }
+  const region = (pixels: Int32Array, width: number, left: number, top: number, right: number, bottom: number) => {
+    const out: number[] = []
+    for (let y = top; y < bottom; y += 1) for (let x = left; x < right; x += 1) out.push(pixels[y * width + x] ?? -2)
+    return out
+  }
+  const windowView = (pixels: Int32Array, width: number) => region(pixels, width, 4, 4, 14, 12)
+
+  // Hashes of the room as 1.5.2 drew it (origin/main before places), for widths 40, 52 and 64,
+  // ticks 0, 3, 7 and 19 (typing on odd ticks) and hours 3, 7, 12, 19 and 23, in that order.
+  const HOUSE_GOLDEN = [
+    292341936, 1351319429, 988719805, 3027865557, 292341936, 1044909471, 1248271815, 1379801423, 3535530359, 1044909471,
+    2101288034, 1363489371, 281069987, 300097815, 2101288034, 2449079458, 3054603389, 308995886, 1680139464, 2449079458,
+    278067457, 3563723068, 1004952808, 3292203484, 278067457, 2294503862, 3315871602, 1144059638, 4161192082, 2294503862,
+    1126461447, 899547194, 2197898590, 1888419430, 1126461447, 4048501679, 2831099588, 3511877539, 3248249413, 4048501679,
+    4113570937, 1140682964, 3776700848, 2489475828, 4113570937, 1937988222, 3592549114, 1441942894, 3775028762, 1937988222,
+    1312619375, 2029594498, 3195285974, 1206545902, 1312619375, 3486635751, 214337932, 2439975563, 580428365, 3486635751,
+  ]
+  const hash = (pixels: Int32Array): number => {
+    let h = 0x811c9dc5
+    for (const value of pixels) {
+      h ^= value & 0xffff
+      h = Math.imul(h, 0x01000193) >>> 0
+      h ^= (value >>> 16) & 0xffff
+      h = Math.imul(h, 0x01000193) >>> 0
+    }
+    return h
+  }
+
+  test('the house is pixel for pixel the room Mochi had before places, and the default', async () => {
+    const hashes: number[] = []
+    for (const width of [40, 52, 64]) {
+      for (const tick of [0, 3, 7, 19]) {
+        for (const hour of [3, 7, 12, 19, 23]) {
+          const canvas = createCanvas(width, SCENE_HEIGHT)
+          drawWorld(canvas, tick, hour, tick % 2 === 1, 'house')
+          hashes.push(hash(canvas.pixels))
+        }
+      }
+    }
+    expect(hashes).toEqual(HOUSE_GOLDEN)
+    expect(at('house', 64, 3, 12)).toEqual(world(64, 3, 12))
+  })
+
+  test('a place changes only its window, its prop slot and its floor line', async () => {
+    for (const width of [MIN_SCENE_WIDTH, 52, MAX_SCENE_WIDTH]) {
+      const { shelfLeft, windowLeft } = layoutFor(width)
+      const isPlaceOwned = (x: number, y: number) =>
+        y === GROUND_Y ||
+        (x >= windowLeft - 1 && x <= windowLeft + 12 && y >= 3 && y <= 13) ||
+        (shelfLeft !== undefined && x >= shelfLeft && x < shelfLeft + 8 && y < GROUND_Y)
+      for (const place of PLACE_IDS) {
+        for (let tick = 0; tick < 60; tick += 1) {
+          const placed = at(place, width, tick, 12)
+          const house = at('house', width, tick, 12)
+          for (let y = 0; y < SCENE_HEIGHT; y += 1) {
+            for (let x = 0; x < width; x += 1) {
+              if (isPlaceOwned(x, y)) continue
+              const index = y * width + x
+              if (placed[index] !== house[index]) throw new Error(`${place} at width ${width}, tick ${tick} paints (${x}, ${y}) outside its own parts`)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  test('every place keeps the desk and monitor exactly where the house has them', async () => {
+    for (const width of [MIN_SCENE_WIDTH, 52, MAX_SCENE_WIDTH]) {
+      const { deskLeft } = layoutFor(width)
+      // Above the floor line, whose color is the place's own.
+      const desk = (place: PlaceId) => region(at(place, width, 7, 12), width, deskLeft, 9, width, GROUND_Y)
+      for (const place of PLACE_IDS) expect(desk(place)).toEqual(desk('house'))
+    }
+  })
+
+  test('each place has its own view through the window, wide or narrow', async () => {
+    for (const width of [MIN_SCENE_WIDTH, MAX_SCENE_WIDTH]) {
+      const views = PLACE_IDS.map(place => windowView(at(place, width, 5, 12), width).join(','))
+      expect(new Set(views).size).toBe(PLACE_IDS.length)
+    }
+  })
+
+  test('space has no day, while the landscapes darken at night', async () => {
+    expect(windowView(at('space', 64, 5, 12), 64)).toEqual(windowView(at('space', 64, 5, 23), 64))
+    expect(windowView(at('mountain', 64, 5, 12), 64)).not.toEqual(windowView(at('mountain', 64, 5, 23), 64))
+  })
+
+  test('every place keeps the clean room: open wall, one floor line, nothing below, no cat colors', async () => {
+    for (const place of PLACE_IDS) {
+      for (const tick of [0, 7, 19, 40]) {
+        const pixels = at(place, 64, tick, tick % 2 === 0 ? 12 : 23)
+        // From just past the prop slot to just before the desk: nothing painted.
+        const { shelfLeft = 0, deskLeft } = layoutFor(64)
+        expect(new Set(region(pixels, 64, shelfLeft + 8, 0, deskLeft, GROUND_Y)).size).toBe(1)
+        // The line, crossed by the desk legs (the library's floor is the legs' own dark wood).
+        expect(new Set(region(pixels, 64, 0, GROUND_Y, 64, GROUND_Y + 1)).size).toBeLessThanOrEqual(2)
+        expect(region(pixels, 64, 0, GROUND_Y, 64, GROUND_Y + 1).includes(-1)).toBe(false)
+        expect(new Set(region(pixels, 64, 36, GROUND_Y + 1, 44, SCENE_HEIGHT))).toEqual(new Set([-1]))
+        expect(pixels.includes(FUR)).toBe(false)
+      }
+    }
+  })
+
+  test('the prop stands in the shelf\'s spot, and its moving part moves', async () => {
+    const { shelfLeft = 0 } = layoutFor(64)
+    for (const place of PLACE_IDS) {
+      const slot = (tick: number) => region(at(place, 64, tick, 12), 64, shelfLeft, 0, shelfLeft + 9, GROUND_Y)
+      expect(slot(0).some(pixel => pixel !== -1)).toBe(true)
+    }
+    const moving = (place: PlaceId) => [0, 6, 12, 18, 24].map(tick => region(at(place, 64, tick, 12), 64, shelfLeft, 0, shelfLeft + 9, GROUND_Y).join(','))
+    for (const place of ['house', 'gym', 'forest', 'space', 'library'] as const) expect(new Set(moving(place)).size).toBeGreaterThan(1)
   })
 })
