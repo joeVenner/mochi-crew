@@ -196,7 +196,25 @@ describe('session badge', () => {
     expect((await $.command.run(mochi('badge off'))).text).toContain('Badge off')
     expect(restores(machine).length).toBe(1)
     expect((await prompt($, machine, titled.sessionTitle)).sessionTitle).toBe('Topic')
-    expect((await $.command.run(mochi('badge color teal'))).text).toContain('No color named "teal"')
+    expect((await $.command.run(mochi('badge color teal'))).text).toContain('No color or place named "teal"')
+  })
+
+  test('/mochi place picks a place and paints its color', async ($, on) => {
+    const machine = host(on)
+    await start($, machine)
+    const moved = await $.command.run(mochi('place gym'))
+    expect(moved.text).toContain('Graphite · gym')
+    expect(tints(machine).at(-1)?.slice(4)).toEqual(rgbOf('graphite'))
+    expect((await $.command.run(mochi('place'))).text).toContain('[gym]')
+  })
+
+  test('outside Terminal.app, a color change says the place and title show it', async ($, on) => {
+    const machine = host(on)
+    machine.termProgram = ''
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    const moved = await $.command.run(mochi('place forest'))
+    expect(moved.text).toContain('Tab colors need macOS Terminal.app; here Mochi\'s place and the title show it.')
+    expect(moved.text).not.toContain('could be painted')
   })
 
   test('a saved off switch keeps a new session untinted', async ($, on) => {

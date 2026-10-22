@@ -10,13 +10,15 @@ export type BadgeCommand =
   | { readonly kind: 'unknown-color'; readonly name: string }
   | { readonly kind: 'title'; readonly text: string }
   | { readonly kind: 'auto' }
+  | { readonly kind: 'places' }
   | { readonly kind: 'help' }
 
 export const BADGE_USAGE = [
-  'usage: /mochi badge [on | off | color <name> | title <text> | auto]',
-  '  /mochi badge                 this session\'s color and title',
-  '  /mochi badge on|off          tint the tab and add the emoji title, or stop (saved)',
-  `  /mochi badge color <name>    ${PALETTE.map(tint => tint.id).join(', ')}`,
+  'usage: /mochi badge [on | off | color <name> | place [<name>] | title <text> | auto]',
+  '  /mochi badge                 this session\'s color, place and title',
+  '  /mochi badge on|off          tint the tab, move Mochi and add the emoji title, or stop (saved)',
+  `  /mochi badge color <name>    ${PALETTE.map(tint => tint.id).join(', ')} (or a place)`,
+  `  /mochi place <name>          ${PALETTE.map(tint => tint.place).join(', ')} (the same as its color)`,
   '  /mochi badge title <text>    pin a title (shown from your next prompt)',
   '  /mochi badge auto            follow Claude Code\'s topic again',
 ].join('\n')
@@ -37,6 +39,11 @@ export const parseBadgeCommand = (args: string): BadgeCommand => {
       const tint = findTint(name)
       return tint ? { kind: 'color', tint } : { kind: 'unknown-color', name }
     }
+    case 'place': {
+      if (!name) return { kind: 'places' }
+      const tint = findTint(name)
+      return tint ? { kind: 'color', tint } : { kind: 'unknown-color', name }
+    }
     case 'title':
       return remainder ? { kind: 'title', text: remainder } : { kind: 'auto' }
     case 'auto':
@@ -46,11 +53,15 @@ export const parseBadgeCommand = (args: string): BadgeCommand => {
   }
 }
 
-/** The first line of `/mochi badge`: color, title source and which tab it paints. */
+/** The first line of `/mochi badge`: color and place, title source and which tab it paints. */
 export const describeStatus = (record: BadgeRecord, isOn: boolean, tty: string | undefined): string => {
   const tint = findTint(record.tint)
-  const color = `${tint?.emoji ?? ''} ${tint?.name ?? record.tint}${isOn ? '' : ' (badge off)'}`
+  const color = `${tint?.emoji ?? ''} ${tint?.name ?? record.tint} · ${tint?.place ?? 'house'}${isOn ? '' : ' (badge off)'}`
   const topic = record.pinned ? `title pinned: ${record.pinned}` : 'title follows Claude Code\'s topic'
-  const where = tty ? `tab ${tty}` : 'no Terminal.app tab found, so title only'
+  const where = tty ? `tab ${tty}` : 'no Terminal.app tab, so the place and title show it'
   return `${color} · ${topic} · ${where}`
 }
+
+/** `/mochi place`: every place, with this session's marked. */
+export const describePlaces = (current: string | undefined): string =>
+  `Places: ${PALETTE.map(tint => (tint.id === current ? `[${tint.place}]` : tint.place)).join('  ')}`

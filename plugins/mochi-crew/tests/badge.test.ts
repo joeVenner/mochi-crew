@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { describeStatus, parseBadgeCommand } from '../hooks/badgeCommand'
-import { PALETTE, findTint, hashString, hexToRgb16, pickTint, tintForRgb } from '../hooks/badgePalette'
+import { describePlaces, describeStatus, parseBadgeCommand } from '../hooks/badgeCommand'
+import { PALETTE, findTint, hashString, hexToRgb16, pickTint, placeFor, tintForRgb } from '../hooks/badgePalette'
+import { PLACE_IDS } from '../hooks/world'
 import type { Rgb16 } from '../hooks/badgePalette'
 import { newRecord, parseRecord, rememberSet, withoutPinned } from '../hooks/badgeRecords'
 import { isTranscriptPath } from '../hooks/badge'
@@ -42,6 +43,34 @@ describe('badge palette', () => {
     const everyOnce = PALETTE.map(tint => hexToRgb16(tint.hex))
     expect(pickTint([...everyOnce, hexToRgb16(plum.hex)], 'sess').id).not.toBe('plum')
     expect(pickTint(everyOnce, 'sess').id).toBe(pickTint([], 'sess').id)
+  })
+})
+
+describe('badge places', () => {
+  test('every color has its own place, and every place has a color', () => {
+    expect(new Set(PALETTE.map(tint => tint.place)).size).toBe(PALETTE.length)
+    expect([...PALETTE.map(tint => tint.place)].sort()).toEqual([...PLACE_IDS].sort())
+  })
+
+  test('a place name finds its color', () => {
+    expect(findTint('gym')?.id).toBe('graphite')
+    expect(findTint(' Forest ')?.id).toBe('pine')
+    expect(findTint('moon')).toBeUndefined()
+  })
+
+  test('the desk stands at the badge\'s place, and in the house while the badge is off or unset', () => {
+    expect(placeFor('rust', true)).toBe('desert')
+    expect(placeFor('rust', false)).toBe('house')
+    expect(placeFor(undefined, true)).toBe('house')
+    expect(placeFor('teal', true)).toBe('house')
+  })
+
+  test('/mochi place lists the places with this session\'s marked, and picks one by name', () => {
+    expect(parseBadgeCommand('place')).toEqual({ kind: 'places' })
+    expect(parseBadgeCommand('place beach')).toEqual({ kind: 'color', tint: findTint('harbor') })
+    expect(parseBadgeCommand('place moon')).toEqual({ kind: 'unknown-color', name: 'moon' })
+    expect(describePlaces('harbor')).toContain('[beach]')
+    expect(describePlaces('harbor')).toContain(' gym')
   })
 })
 
@@ -211,7 +240,7 @@ describe('badge records and commands', () => {
   })
 
   test('names the color, the title source and the tab', () => {
-    expect(describeStatus(newRecord('pine'), true, '/dev/ttys004')).toBe('🟢 Pine · title follows Claude Code\'s topic · tab /dev/ttys004')
-    expect(describeStatus({ ...newRecord('plum'), pinned: 'Mine' }, false, undefined)).toContain('(badge off) · title pinned: Mine · no Terminal.app tab')
+    expect(describeStatus(newRecord('pine'), true, '/dev/ttys004')).toBe('🟢 Pine · forest · title follows Claude Code\'s topic · tab /dev/ttys004')
+    expect(describeStatus({ ...newRecord('plum'), pinned: 'Mine' }, false, undefined)).toContain('space (badge off) · title pinned: Mine · no Terminal.app tab, so the place and title show it')
   })
 })
