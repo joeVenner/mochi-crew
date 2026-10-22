@@ -313,8 +313,9 @@ Commands:
   argument list, never through a shell, and only for files that resolve inside the project or
   inside a worktree git lists for it. The session badge runs `ps` to find this session's tab,
   `osascript` to read and set Terminal.app tab colors (with every value passed as an argument,
-  never as script text), and `grep` to read Claude Code's topic from the session transcript. Titles
-  it sets are drawn from that topic or your own words, with control characters removed.
+  never as script text), and `grep` to read Claude Code's topic from the session transcript (on
+  Windows, which has no `grep`, it reads that file instead). Titles it sets are drawn from that
+  topic or your own words, with control characters removed.
 - **Secrets are masked on screen.** Commands shown in the HUD have tokens, auth headers, URL
   credentials and secret-looking env vars or flags replaced with `••••`. This affects the display
   only; your commands run unchanged.
