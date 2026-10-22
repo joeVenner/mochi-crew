@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-22
+
+### Added
+
+- Places for the session badge: Mochi's desk now stands somewhere different in each session, the
+  house, a mountain, the gym, a forest, the beach, the desert, a space station or a library. The
+  window shows the place under your local sky (space keeps its stars), a prop stands in the
+  bookshelf's spot and the floor line takes the place's color. Each place goes with one badge color,
+  so the pane tells sessions apart in every terminal, Windows Terminal included. `/mochi place`
+  lists them and `/mochi place <name>` moves Mochi; color names and place names both work in
+  `/mochi badge color`.
+
+### Changed
+
+- Outside Terminal.app, `/mochi badge color` and `on` now say that tab colors need macOS
+  Terminal.app and that Mochi's place and the title show the color, instead of reporting a tab
+  that could not be painted.
+
 ## [1.5.2] - 2026-10-22
 
 ### Fixed
