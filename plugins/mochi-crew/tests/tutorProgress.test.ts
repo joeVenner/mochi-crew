@@ -164,16 +164,31 @@ describe('tutor progress', () => {
     expect(after.deck).toEqual([card(choice('old:0'), 1, 3), card(choice('new:0'), 1, 3)])
   })
 
-  test('deck capped at 20 oldest first', async () => {
-    const deck = Array.from({ length: MAX_DECK }, (_, index) => card(choice(`old:${index}`), 2, 10 + index))
+  test('a full deck drops the highest box first and keeps new misses', async () => {
+    // Box 2 at due 10..19 except two box-3 cards, so the box rule and the due tie-break both show.
+    const deck = Array.from({ length: MAX_DECK }, (_, index) => card(choice(`old:${index}`), index === 4 || index === 9 ? 3 : 2, 10 + index))
     const after = afterRound(project({ rounds: 8, deck }), round([choice('new:0'), choice('new:1')], [answer('new:0', 'wrong'), answer('new:1', 'wrong')]), 1)
     expect(after.deck).toHaveLength(MAX_DECK)
-    // The two new cards are due at 9, below every held card, so they are the oldest due and go first.
-    expect(after.deck.some(held => held.question.id.startsWith('new'))).toBe(false)
-    const overdue = afterRound(project({ rounds: 30, deck }), round([choice('new:0')], [answer('new:0', 'wrong')]), 1)
-    expect(overdue.deck).toHaveLength(MAX_DECK)
-    expect(overdue.deck.some(held => held.question.id === 'old:0')).toBe(false)
-    expect(overdue.deck.at(-1)?.question.id).toBe('new:0')
+    // The new cards are due at 9, below every held card, yet they stay: the box-3 cards go instead.
+    expect(after.deck.slice(0, 2).map(held => held.question.id)).toEqual(['new:0', 'new:1'])
+    expect(after.deck.some(held => held.question.id === 'old:4' || held.question.id === 'old:9')).toBe(false)
+    const third = afterRound(project({ rounds: 8, deck }), round([choice('a:0'), choice('a:1'), choice('a:2')], ['a:0', 'a:1', 'a:2'].map(id => answer(id, 'wrong'))), 1)
+    // Past the box-3 cards, the box-2 card due soonest goes next.
+    expect(third.deck.map(held => held.question.id).filter(id => id.startsWith('old'))).not.toContain('old:0')
+    expect(third.deck.filter(held => held.question.id.startsWith('a:'))).toHaveLength(3)
+    // A miss on a held card replaces it in place rather than growing the deck.
+    const again = afterRound(project({ rounds: 30, deck }), round([{ ...choice('old:9'), isReview: true }], [answer('old:9', 'wrong')]), 1)
+    expect(again.deck).toHaveLength(MAX_DECK)
+    expect(again.deck.find(held => held.question.id === 'old:9')).toEqual(card(choice('old:9'), 1, 31))
+  })
+
+  test('parsed decks over the cap drop the highest box first', async () => {
+    const deck = Array.from({ length: MAX_DECK + 2 }, (_, index) => card(choice(`p:${index}`), index < 2 ? 1 : index === 20 ? 3 : 2, index))
+    const parsed = projectOf(parseProgress({ v: 1, projects: { '/repo': { ...FRESH_PROJECT, deck } } }), '/repo')
+    expect(parsed.deck).toHaveLength(MAX_DECK)
+    expect(parsed.deck.map(held => held.question.id)).not.toContain('p:20')
+    expect(parsed.deck.map(held => held.question.id)).not.toContain('p:2')
+    expect(parsed.deck.slice(0, 2).map(held => held.question.id)).toEqual(['p:0', 'p:1'])
   })
 
   test('projects capped at 12 by least recent', async () => {

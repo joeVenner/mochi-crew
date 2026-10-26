@@ -5,7 +5,7 @@ import { scoreRound } from './tutorRound'
 
 /** Projects kept in the store; the least recently quizzed one goes first. */
 export const MAX_PROJECTS = 12
-/** Review cards kept per project; the lowest `dueRound` goes first. */
+/** Review cards kept per project; the highest box (closest to mastered) goes first. */
 export const MAX_DECK = 20
 /** Retired topics kept per project, for the prompt's "do not re-ask" line. */
 export const MAX_MASTERED = 20
@@ -146,9 +146,21 @@ const uniqueCards = (deck: readonly TutorCard[]): readonly TutorCard[] =>
 /** Oldest due first; the sort is stable, so among equal `dueRound`s the earlier card goes first. */
 const byDueRound = (deck: readonly TutorCard[]): readonly TutorCard[] => [...deck].sort((a, b) => a.dueRound - b.dueRound)
 
-const capDeck = (deck: readonly TutorCard[]): readonly TutorCard[] => {
+/**
+ * The deck within `MAX_DECK`, oldest due first. The highest box goes first, as the card closest to
+ * mastered costs the least to lose, and within a box the lowest `dueRound`. Cards named in `keep`
+ * (this round's misses) go only once nothing else is left: a brand-new miss is due soonest, so a
+ * due-round rule alone would drop exactly the card the round just earned.
+ */
+const capDeck = (deck: readonly TutorCard[], keep: ReadonlySet<string> = new Set()): readonly TutorCard[] => {
   const sorted = byDueRound(deck)
-  return sorted.slice(Math.max(0, sorted.length - MAX_DECK))
+  const excess = sorted.length - MAX_DECK
+  if (excess <= 0) return sorted
+  // Both sorts are stable, so equal boxes keep their due order.
+  const byBox = [...sorted].sort((a, b) => b.box - a.box)
+  const evictionOrder = [...byBox.filter(card => !keep.has(card.question.id)), ...byBox.filter(card => keep.has(card.question.id))]
+  const evicted = new Set(evictionOrder.slice(0, excess))
+  return sorted.filter(card => !evicted.has(card))
 }
 
 const byteLength = (store: TutorProgressStore): number => new TextEncoder().encode(JSON.stringify(store)).length
@@ -240,7 +252,8 @@ const storedQuestion = (question: TutorQuestion): TutorQuestion => {
  * a card "due next round" is due as soon as this returns. A clean right moves a card up a box
  * (back in 3 rounds, then 6) and retires it into `mastered` from box 3; anything else puts it in
  * box 1. Only a replayed (`isReview`) question moves a card up; any miss replaces the card with the
- * same id. A retry pass earns nothing and changes nothing but `updatedAt`.
+ * same id. A full deck drops held cards, highest box first, before any of this round's misses. A
+ * retry pass earns nothing and changes nothing but `updatedAt`.
  */
 export const afterRound = (project: TutorProject, round: TutorRound, now: number): TutorProject => {
   if (round.isRetry) return { ...project, updatedAt: now }
@@ -248,6 +261,7 @@ export const afterRound = (project: TutorProject, round: TutorRound, now: number
   let deck: readonly TutorCard[] = project.deck
   const retired: string[] = []
   const missed: string[] = []
+  const missedIds: string[] = []
   for (const answer of round.answers) {
     const question = questions.get(answer.questionId)
     if (question === undefined) continue
@@ -255,6 +269,7 @@ export const afterRound = (project: TutorProject, round: TutorRound, now: number
     const others = deck.filter(held => held.question.id !== question.id)
     if (isMissed(answer)) {
       missed.push(question.topic)
+      missedIds.push(question.id)
       deck = [...others, { question: storedQuestion(question), box: 1, dueRound: project.rounds + 1 }]
       continue
     }
@@ -274,7 +289,7 @@ export const afterRound = (project: TutorProject, round: TutorRound, now: number
     level,
     rounds: project.rounds + 1,
     streak,
-    deck: capDeck(deck),
+    deck: capDeck(deck, new Set(missedIds)),
     mastered: keepLast([...project.mastered, ...retired], MAX_MASTERED),
     recentMisses: keepLast([...project.recentMisses, ...missed], MAX_MISSES),
     updatedAt: now,
