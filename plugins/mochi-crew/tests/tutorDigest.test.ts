@@ -111,11 +111,11 @@ describe('tutorDigest', () => {
 
   test('DIFF_EXCLUDES covers env, keys, lockfiles and dist', async () => {
     for (const pattern of ['**/.env*', '**/*.pem', '**/*.key', '**/id_rsa*', '**/package-lock.json', '**/yarn.lock', '**/*.lock', '**/dist/**', '**/node_modules/**', '**/*secret*']) {
-      expect(DIFF_EXCLUDES.includes(`:(exclude,glob)${pattern}`)).toBe(true)
+      expect(DIFF_EXCLUDES.includes(`:(exclude,glob,icase)${pattern}`)).toBe(true)
     }
-    expect(DIFF_EXCLUDES.every(spec => spec.startsWith(':(exclude,glob)'))).toBe(true)
-    expect(diffArgs()).toEqual(['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U2', 'HEAD', '--', '.', ...DIFF_EXCLUDES])
-    expect(numstatArgs()).toEqual(['diff', '--numstat', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', '.', ...DIFF_EXCLUDES])
+    expect(DIFF_EXCLUDES.every(spec => spec.startsWith(':(exclude,glob,icase)'))).toBe(true)
+    expect(diffArgs()).toEqual(['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U2', '--relative', 'HEAD', '--', '.', ...DIFF_EXCLUDES])
+    expect(numstatArgs()).toEqual(['diff', '--numstat', '--no-color', '--no-ext-diff', '--no-textconv', '--relative', 'HEAD', '--', '.', ...DIFF_EXCLUDES])
     expect(logArgs()).toEqual(['log', '-n', '8', '--no-color', '--no-show-signature', '--format=%h%x09%s'])
   })
 
@@ -278,7 +278,7 @@ describe('tutorDigest', () => {
     expect(digest.files).toEqual(['src/café "x".ts'])
   })
 
-  test('buildDigest drops secret-shaped paths that case-sensitive git excludes miss', async () => {
+  test('buildDigest drops secret-shaped paths even when git let them through', async () => {
     const diff = [fileDiff('config/Credentials.json', ['@@ -1 +1 @@', '+{"user": "SENTINEL_LEAK"}']), fileDiff('src/a.ts', [hunk(1, 2)])].join('\n')
     const digest = buildDigest({ ...SOURCES, diff, numstat: '1\t0\tconfig/Credentials.json\n2\t0\tsrc/a.ts\n1\t0\tProd.PEM' })
     expect(digest.text.includes('SENTINEL_LEAK')).toBe(false)

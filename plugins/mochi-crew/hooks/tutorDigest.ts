@@ -50,7 +50,8 @@ const PEM_REMOVED = '[private key removed]'
 
 /**
  * Pathspecs that keep secret-shaped and noisy files out of every git call, so their content
- * never leaves git at all. Each is `:(exclude,glob)` plus a pattern.
+ * never leaves git at all. Each is `:(exclude,glob,icase)` plus a pattern; `icase` because the
+ * patterns are lowercase and `Credentials.json` or `Prod.PEM` must not get past them.
  */
 export const DIFF_EXCLUDES: readonly string[] = [
   '**/.env*',
@@ -62,7 +63,7 @@ export const DIFF_EXCLUDES: readonly string[] = [
   '**/*.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock',
   '**/*.min.*',
   '**/dist/**', '**/node_modules/**',
-].map(pattern => `:(exclude,glob)${pattern}`)
+].map(pattern => `:(exclude,glob,icase)${pattern}`)
 
 const SECRET_NAMES: ReadonlySet<string> = new Set(['.npmrc', '.netrc', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'])
 const SECRET_EXTENSIONS: readonly string[] = ['.pem', '.key', '.p12', '.pfx', '.lock']
@@ -70,7 +71,7 @@ const SECRET_PREFIXES: readonly string[] = ['.env', 'id_rsa', 'id_ed25519', 'id_
 const SECRET_INFIXES: readonly string[] = ['secret', 'credential', '.tfstate', '.min.']
 const SKIPPED_FOLDERS: ReadonlySet<string> = new Set(['dist', 'node_modules'])
 
-// Lowercased, unlike git's globs: a read is refused for `Secrets.json` too, erring safe.
+// Lowercased like the `icase` globs, so a read is refused for `Secrets.json` too.
 const isSecretName = (segment: string): boolean => {
   const name = segment.toLowerCase()
   return SECRET_NAMES.has(name)
@@ -135,11 +136,15 @@ export const maskForModel = (text: string, maxChars: number, maxLine: number = M
 
 const DIFF_FLAGS: readonly string[] = ['--no-color', '--no-ext-diff', '--no-textconv']
 
-/** `git diff` of the work tree against HEAD, two lines of context, secret paths excluded. */
-export const diffArgs = (): readonly string[] => ['diff', ...DIFF_FLAGS, '-U2', 'HEAD', '--', '.', ...DIFF_EXCLUDES]
+// `--relative` prints paths from the session root, not the repo top, so they match the paths the
+// session touched when the root is a subfolder of the repo.
+const DIFF_SCOPE: readonly string[] = ['--relative', 'HEAD', '--', '.', ...DIFF_EXCLUDES]
 
-/** `git diff --numstat` against HEAD, with the same exclusions as the diff. */
-export const numstatArgs = (): readonly string[] => ['diff', '--numstat', ...DIFF_FLAGS, 'HEAD', '--', '.', ...DIFF_EXCLUDES]
+/** `git diff` of the work tree against HEAD, two lines of context, secret paths excluded, paths relative to the root. */
+export const diffArgs = (): readonly string[] => ['diff', ...DIFF_FLAGS, '-U2', ...DIFF_SCOPE]
+
+/** `git diff --numstat` against HEAD, with the same exclusions and relative paths as the diff. */
+export const numstatArgs = (): readonly string[] => ['diff', '--numstat', ...DIFF_FLAGS, ...DIFF_SCOPE]
 
 /** `git log` of the last 8 commits as `hash<TAB>subject`; no signature check runs gpg. */
 export const logArgs = (): readonly string[] => ['log', '-n', '8', '--no-color', '--no-show-signature', '--format=%h%x09%s']
@@ -376,7 +381,7 @@ const changedFiles = (numstat: string | undefined): readonly ChangedFile[] =>
     if (match === null) return []
     const [, adds = '', dels = '', quoted = ''] = match
     const path = unquote(quoted)
-    // git's excludes are case-sensitive; `Credentials.json` gets past them but not this.
+    // Checked again here: the diff text is input, and a path git did not exclude must still not pass.
     if (isSecretPath(path)) return []
     // One line per file: a name holding a newline must not split into a forged line.
     const shown = safeText(path)
@@ -418,7 +423,7 @@ const MAX_DIFF_MASKED = MAX_DIFF_FILE * 2
 // Files are masked one at a time in order and the loop stops once the budget is spent, and
 // maskForModel stops at MAX_DIFF_MASKED, so a 1 MB diff is never redacted whole.
 const diffPart = (sources: DigestSources, budget: number): DiffPart => {
-  // git's excludes are case-sensitive; `Credentials.json` gets past them but not this.
+  // Checked again here: the diff text is input, and a path git did not exclude must still not pass.
   const byPath = new Map(splitDiffByFile(sources.diff ?? '').filter(file => !isSecretPath(file.path)).map(file => [file.path, file.body]))
   const order = orderDiffFiles([...byPath.keys()], sources.touched, sources.added)
   const entries: string[] = []
