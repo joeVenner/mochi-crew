@@ -59,6 +59,7 @@ const ctx = (over: Partial<TutorViewContext> = {}): TutorViewContext => ({
   bodyRows: 30,
   now: 12_000,
   plan: { source: 'fork', why: 'warm', idleMs: 120_000, isMaybeCold: false, contextTokens: 148_000 },
+  canFork: true,
   planText: { text: 'session · warm (2m idle)', isWarning: false },
   project: FRESH_PROJECT,
   session: { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false },
@@ -207,10 +208,16 @@ describe('tutor view', () => {
   test('home toggles the digest only when the plan would fork', async () => {
     const home: TutorState = { phase: 'home', focus: 'recent', isDigestOnly: false }
     expect(tutorScreen(home, ctx()).controls.find(control => control.hotkey === 'g')?.label).toBe('use digest instead')
-    const digestPlan = ctx({ plan: { source: 'digest', why: 'no-reply', idleMs: null }, planText: { text: 'digest · no reply yet', isWarning: false } })
+    const digestPlan = ctx({ plan: { source: 'digest', why: 'no-reply', idleMs: null }, canFork: false, planText: { text: 'digest · no reply yet', isWarning: false } })
     expect(tutorScreen(home, digestPlan).controls.some(control => control.hotkey === 'g')).toBe(false)
+    const forced = ctx({ plan: { source: 'digest', why: 'config', idleMs: 60_000 }, canFork: false, planText: { text: 'digest · set in /config', isWarning: false } })
+    expect(tutorScreen(home, forced).controls.some(control => control.hotkey === 'g')).toBe(false)
     const chosen = tutorScreen({ ...home, isDigestOnly: true }, ctx({ plan: { source: 'digest', why: 'chosen', idleMs: null } }))
     expect(chosen.controls.find(control => control.hotkey === 'g')?.label).toBe('use session again')
+    // A chosen digest hides the reason under it: when config forces the digest or the cache went
+    // cold, going back to the session would change nothing, so there is no toggle to press.
+    const stale = tutorScreen({ ...home, isDigestOnly: true }, ctx({ plan: { source: 'digest', why: 'chosen', idleMs: null }, canFork: false }))
+    expect(stale.controls.some(control => control.hotkey === 'g')).toBe(false)
   })
 
   test('the maybe-cold plan line has the warning tone', async () => {

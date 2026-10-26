@@ -56,6 +56,12 @@ export type TutorViewContext = {
   readonly bodyRows: number
   readonly now: number
   readonly plan: TutorPlan
+  /**
+   * Whether the plan would fork without the learner's `g`: `choosePlan` with `isDigestOnly: false`.
+   * `plan` cannot say, since a chosen digest wins over every other rule, and the toggle is only
+   * worth drawing when switching back would change the source.
+   */
+  readonly canFork: boolean
   readonly planText: { text: string; isWarning: boolean }
   readonly project: TutorProject
   readonly session: TutorSession
@@ -316,7 +322,6 @@ const homeScreen = (state: Extract<TutorState, { phase: 'home' }>, ctx: TutorVie
   const fold = tutorFold(ctx.bodyRows)
   const due = dueCards(ctx.project, ctx.project.deck.length).length
   const header = spread('header', titleCells('Mochi Tutor'), [cell(`LV ${ctx.project.level} · ${plural(ctx.project.rounds, 'round')}`, 'dim')], ctx.columns)
-  const canToggle = ctx.plan.source === 'fork' || state.isDigestOnly
   const hasSpent = ctx.session.rounds > 0 || ctx.session.usage.calls > 0
   const body: readonly TutorRow[] = [
     ...(state.note === undefined ? [] : [textRow('note', clean(state.note), 'dim', false)]),
@@ -339,7 +344,7 @@ const homeScreen = (state: Extract<TutorState, { phase: 'home' }>, ctx: TutorVie
   const controls: readonly TutorControl[] = [
     ...starts,
     ...(due > 0 ? [{ key: 'review', label: `review ${due} missed  no model call`, hotkey: 'r', action: { kind: 'review' } } satisfies TutorControl] : []),
-    ...(canToggle
+    ...(ctx.canFork
       ? [{ key: 'toggle-digest', label: state.isDigestOnly ? 'use session again' : 'use digest instead', hotkey: 'g', action: { kind: 'toggle-digest' } } satisfies TutorControl]
       : []),
     closeControl('close'),
