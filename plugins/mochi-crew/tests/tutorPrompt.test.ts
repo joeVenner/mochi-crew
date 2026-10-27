@@ -4,7 +4,7 @@ import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorExchange, Tuto
 import { MASK } from '../hooks/redact'
 import type { Digest } from '../hooks/tutorDigest'
 import type { TutorConfig } from '../hooks/tutorPlan'
-import { ASK_PROMPT_MAX_CHARS, FORK_PROMPT_MAX_CHARS, GRADE_SYSTEM, TUTOR_RULES, askRequest, dataBlock, digestRequest, forkPrompt, gradeRequest, kindMix } from '../hooks/tutorPrompt'
+import { ASK_PROMPT_MAX_CHARS, FORK_PROMPT_MAX_CHARS, GRADE_SYSTEM, SCHEMA_TEXT, TUTOR_RULES, askRequest, codeAskText, dataBlock, digestRequest, forkPrompt, gradeRequest, kindMix } from '../hooks/tutorPrompt'
 import type { PromptContext } from '../hooks/tutorPrompt'
 
 // Dummy, non-functional credentials only.
@@ -135,6 +135,41 @@ describe('tutorPrompt', () => {
     expect(request.effort).toBe('low')
     expect(request.system).toBe(TUTOR_RULES)
     expect(promptOf(request.prompt)).toContain('<data kind="digest">\nx <\\/data> y\n</data>')
+  })
+
+  test('round prompts ask for a v2 reply with code anchors and line questions', async () => {
+    expect(SCHEMA_TEXT.startsWith('{"v":2,')).toBe(true)
+    expect(SCHEMA_TEXT).toContain('"kind":"line"')
+    expect(SCHEMA_TEXT).toContain('"at":{"file":"…","quote":"…"}')
+    expect(TUTOR_RULES).toContain('Never invent code.')
+    expect(TUTOR_RULES).toContain('exact lines of ONE hunk')
+    // The parser reads both; the grader's own contract stays v1.
+    expect(GRADE_SYSTEM).toContain('{"v":1,')
+    expect(promptOf(digestRequest(context(), digest(), CONFIG).prompt)).toContain(`Schema: ${SCHEMA_TEXT}`)
+    expect(forkPrompt(context())).toContain(`Schema: ${SCHEMA_TEXT}`)
+  })
+
+  test('the code ask appears only where there may be a diff to point at', async () => {
+    const ask = codeAskText(kindMix(1, 5))
+    expect(ask).toContain('1 choice may be a "line" question')
+    expect(forkPrompt(context())).toContain(ask)
+    expect(forkPrompt(context({ focus: 'turn' }))).toContain(ask)
+    // The big-picture focus quizzes how parts fit, not changed lines.
+    expect(forkPrompt(context({ focus: 'project' }))).not.toContain('If you see a diff hunk')
+    const hunk = '@@ -1,1 +1,2 @@\n const a = 1\n+const b = 2'
+    expect(promptOf(digestRequest(context(), digest({ excerpts: { 'a.ts': hunk } }), CONFIG).prompt)).toContain(ask)
+    expect(promptOf(digestRequest(context({ focus: 'project' }), digest({ excerpts: { 'a.ts': hunk } }), CONFIG).prompt)).toContain(ask)
+    // A new file's plain excerpt, or none at all, holds no hunk.
+    expect(promptOf(digestRequest(context(), digest({ excerpts: { 'a.ts': 'const a = 1' } }), CONFIG).prompt)).not.toContain('If you see a diff hunk')
+    expect(promptOf(digestRequest(context(), digest(), CONFIG).prompt)).not.toContain('If you see a diff hunk')
+  })
+
+  test('the code ask offers a line question only with a choice to spare', async () => {
+    expect(codeAskText(kindMix(3, 5))).toContain('"line"')
+    expect(codeAskText(kindMix(1, 2))).not.toContain('"line"')
+    expect(codeAskText(kindMix(1, 0))).not.toContain('"line"')
+    // "Write exactly" still counts choice + explain only, so a line question is one of the choices.
+    expect(forkPrompt(context())).toContain('Write exactly 5 questions: 4 choice and 1 explain.')
   })
 
   test('digestRequest asks medium effort at level 3', async () => {
