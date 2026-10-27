@@ -1053,8 +1053,11 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
 
 const TUTOR_PANE = 'mochi-tutor'
 const TUTOR_TITLE = 'Tutor'
-/** The first-use notice's version: a stored consent below it shows the notice again. */
-const TUTOR_CONSENT_VERSION = 1
+/**
+ * The first-use notice's version: a stored consent below it shows the notice again. 2: the
+ * notice now says the digest sends every uncommitted change in the folder, not touched files only.
+ */
+const TUTOR_CONSENT_VERSION = 2
 /** At most this many due cards make one review round. */
 const REVIEW_ROUND_MAX = 5
 /** Text props for each tutor tone: the meter's, and green for a right answer. */
@@ -1950,13 +1953,19 @@ const endTutorSession = async ($: EngineInterface): Promise<void> => {
   $.ui.invalidate('ui.render')
 }
 
-/** Forgets this project's level and deck, here and in the store; other projects keep theirs. */
+/**
+ * Forgets this project's level and deck, here and in the store (other projects keep theirs),
+ * and the consent, which covers every project, so the notice shows again before the next model
+ * call. True when the store took both.
+ */
 const resetTutorProgress = async ($: EngineInterface): Promise<boolean> => {
-  // Loaded first: a reset before the tab ever opened must not leave the saved consent unread.
+  // Loaded first: a later first load must not bring back the consent cleared here.
   await loadTutor($)
   await update($, tutorProject, (): TutorProject | null => FRESH_PROJECT)
+  await update($, tutorConsent, () => 0)
   $.ui.invalidate('ui.render')
-  return saveTutorProject($, FRESH_PROJECT)
+  const [isProgressSaved, isConsentSaved] = await Promise.all([saveTutorProject($, FRESH_PROJECT), persist($, STORE.tutorConsent, 0)])
+  return isProgressSaved && isConsentSaved
 }
 
 const toastTutorHint = ($: EngineInterface, hint: string | null): void => {
@@ -1993,8 +2002,8 @@ const runTutorCommand = async ($: EngineInterface, verb: TutorVerb): Promise<str
       return 'Tutor stopped.'
     case 'reset':
       return (await resetTutorProgress($))
-        ? 'Tutor progress for this project cleared.'
-        : 'Tutor progress for this project cleared (could not save it for next time).'
+        ? 'Tutor progress for this project and the data notice consent cleared.'
+        : 'Tutor progress for this project and the data notice consent cleared (could not save it for next time).'
   }
 }
 

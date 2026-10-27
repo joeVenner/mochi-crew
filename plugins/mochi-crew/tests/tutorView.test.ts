@@ -377,6 +377,10 @@ describe('tutor view', () => {
   test('consent names the tutor model and offers y and n', async () => {
     const screen = tutorScreen({ phase: 'consent' }, ctx({ model: 'sonnet' }))
     expect(allText(screen)).toContain('to sonnet:')
+    // What the digest really sends: every uncommitted change, not only Claude's files.
+    expect(allText(screen)).toContain('all uncommitted changes in this folder')
+    expect(allText(screen)).toContain('removed lines too')
+    expect(allText(screen)).toContain('Common secret patterns masked')
     expect(screen.controls.map(control => [control.hotkey, control.label])).toEqual([['y', 'got it'], ['n', 'not now']])
   })
 

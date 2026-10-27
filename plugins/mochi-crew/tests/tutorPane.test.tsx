@@ -41,6 +41,8 @@ type EngineOptions = {
   messages?: readonly Message[]
   /** Files on disk by absolute path; any other read fails as missing. */
   files?: Readonly<Record<string, string>>
+  /** Store keys whose save fails. */
+  failingSaves?: readonly string[]
   /** Symbolic links by absolute path, each to where it lands. */
   links?: Readonly<Record<string, string>>
   /** Each call takes the next answer; the last one repeats. */
@@ -62,7 +64,7 @@ const DIGEST_CALL: Usage = { input_tokens: 9_000, output_tokens: 800, cache_read
  * store backed by a Map, git and the models as each test plans them, and records of every
  * open, close, toast, save, git argv and model request.
  */
-const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true }, git = {}, messages = [], files = {}, links = {}, forks, completes, isCompleteRefused = false, clock }: EngineOptions = {}) => {
+const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true }, git = {}, messages = [], files = {}, links = {}, failingSaves = [], forks, completes, isCompleteRefused = false, clock }: EngineOptions = {}) => {
   const store = new Map<string, unknown>(Object.entries(saved))
   const record = {
     commands: [] as string[],
@@ -102,6 +104,7 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
   }))
   on('store.get', ($, e) => ({ value: store.get(e.key) }))
   on('store.set', ($, e) => {
+    if (failingSaves.includes(e.key)) throw new Error('disk full')
     record.saves.push(e.key)
     store.set(e.key, e.value)
     return { value: undefined }
@@ -294,7 +297,7 @@ describe('tutor tab', () => {
       const ui = await $.ui.mount({ plugin: 'mochi-crew', surface, ...TAB, props: paneProps('Tutor') })
       await shows(ui, NOTICE)
       await ui.press({ key: 'consent' })
-      expect(store.get('tutorConsent')).toBe(1)
+      expect(store.get('tutorConsent')).toBe(2)
       // No turn, edit or change yet: Home says so and offers no start.
       await shows(ui, EMPTY_HOME)
       expect(await ui.find({ type: 'Button', key: 'start:recent' })).toBeUndefined()
@@ -313,7 +316,7 @@ describe('tutor tab', () => {
 
   test('a consent saved by an earlier session opens straight on Home', async ($, on) => {
     mock.clock(on)
-    engine(on, { saved: { tutorConsent: 1 } })
+    engine(on, { saved: { tutorConsent: 2 } })
     await start($)
     await $.turn.complete({ answer: 'ok', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' })
     await $.command.run(mochi('tutor'))
@@ -327,7 +330,7 @@ describe('tutor tab', () => {
 
   test('home offers the review and the digest toggle only when they apply', async ($, on) => {
     mock.clock(on)
-    engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck } })
+    engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
     await start($)
     await $.command.run(mochi('tutor'))
     const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
@@ -356,7 +359,7 @@ describe('tutor tab', () => {
     expect(await run('tutor')).toBe('Tutor opened.')
     expect(await run('tutor start', 'mascot')).toBe('Tutor round starting in its tab.')
     expect(await run('tutor stop')).toBe('Tutor stopped.')
-    expect(await run('tutor reset')).toBe('Tutor progress for this project cleared.')
+    expect(await run('tutor reset')).toBe('Tutor progress for this project and the data notice consent cleared.')
     expect(await run('tutor quiz')).toContain('unknown tutor action')
     await ui.unmount()
     expect(record.modelCalls).toBe(0)
@@ -365,7 +368,7 @@ describe('tutor tab', () => {
 
   test('/mochi tutor review starts a round from the deck without saying what it asks', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck } })
+    const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
     await start($)
     const text = (await $.command.run(mochi('tutor review'))).text ?? ''
     expect(text).toBe('Tutor round starting in its tab.')
@@ -377,23 +380,50 @@ describe('tutor tab', () => {
     await ui.unmount()
   })
 
-  test('/mochi tutor reset forgets the deck', async ($, on) => {
+  test('/mochi tutor reset forgets the deck and the consent', async ($, on) => {
     mock.clock(on)
-    const { store } = engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck } })
+    const { store, record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
     await start($)
-    expect((await $.command.run(mochi('tutor reset'))).text).toBe('Tutor progress for this project cleared.')
+    expect((await $.command.run(mochi('tutor reset'))).text).toBe('Tutor progress for this project and the data notice consent cleared.')
     expect((await $.command.run(mochi('tutor review'))).text).toBe('No missed questions to review yet.')
     expect(JSON.stringify(store.get('tutorProgress'))).not.toContain('r1-q2')
-    // The consent saved earlier still holds.
+    expect(store.get('tutorConsent')).toBe(0)
+    // The notice shows again, and a start waits on it with no model call.
+    expect((await $.command.run(mochi('tutor start'))).text).toBe('Tutor opened.')
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
+    await shows(ui, NOTICE)
+    expect(record.modelCalls).toBe(0)
+    await ui.unmount()
+  })
+
+  test('/mochi tutor reset says so when the cleared consent could not be saved', async ($, on) => {
+    mock.clock(on)
+    engine(on, { saved: { tutorConsent: 2 }, failingSaves: ['tutorConsent'] })
+    await start($)
+    expect((await $.command.run(mochi('tutor reset'))).text).toBe('Tutor progress for this project and the data notice consent cleared (could not save it for next time).')
+    // Cleared for this process all the same.
     await $.command.run(mochi('tutor'))
     const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
+    await shows(ui, NOTICE)
+    await ui.unmount()
+  })
+
+  test('a consent to the older notice shows the notice again', async ($, on) => {
+    mock.clock(on)
+    const { store } = engine(on, { saved: { tutorConsent: 1 } })
+    await start($)
+    await $.command.run(mochi('tutor'))
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
+    await shows(ui, NOTICE)
+    await ui.press({ key: 'consent' })
+    expect(store.get('tutorConsent')).toBe(2)
     await lacks(ui, NOTICE)
     await ui.unmount()
   })
 
   test('/mochi tutor in -p says it needs an interactive session', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck } })
+    const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
     await start($, false)
     for (const args of ['tutor', 'tutor start', 'tutor digest', 'tutor review', 'tutor stop', 'tutor reset']) {
       expect((await $.command.run(mochi(args))).text).toBe('Tutor needs an interactive session.')
@@ -406,7 +436,7 @@ describe('tutor tab', () => {
   for (const surface of SURFACES) {
     test(`the main HUD reads quizzing you while a round runs and a bug still wins (${surface})`, async ($, on) => {
       mock.clock(on)
-      engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck } })
+      engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
       on('tool.call', { tool: 'Bash' }, () => ({ result: {} as never, text: 'boom', isError: true }))
       await start($)
       const main = await $.ui.mount({ plugin: 'mochi-crew', surface, ...MAIN, props: paneProps('Mochi') })
@@ -526,7 +556,7 @@ describe('tutor rounds', () => {
   for (const surface of SURFACES) {
     test(`warm session forks once and never completes (${surface})`, async ($, on) => {
       mock.clock(on)
-      const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [reply(quiz(5))] })
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [reply(quiz(5))] })
       await start($)
       await warmUp($)
       const ui = await tutorTab($, surface)
@@ -548,7 +578,7 @@ describe('tutor rounds', () => {
   for (const surface of SURFACES) {
     test(`answering every question shows the summary, adds the XP and saves progress (${surface})`, async ($, on) => {
       mock.clock(on)
-      const { record, store } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [reply(quiz(5))] })
+      const { record, store } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [reply(quiz(5))] })
       await start($)
       await warmUp($)
       const ui = await tutorTab($, surface)
@@ -572,7 +602,7 @@ describe('tutor rounds', () => {
 
   test('a perfect round dances and says the perfect quip, at the XP cap', async ($, on) => {
     mock.clock(on)
-    const { record, store } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))] })
+    const { record, store } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -592,7 +622,7 @@ describe('tutor rounds', () => {
   for (const surface of SURFACES) {
     test(`cold session completes once with haiku and never forks (${surface})`, async ($, on) => {
       const clock = mock.clock(on)
-      const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, completes: [reply(quiz(5), DIGEST_CALL)] })
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, completes: [reply(quiz(5), DIGEST_CALL)] })
       await start($)
       await warmUp($)
       await clock.advance(61 * 60_000)
@@ -610,7 +640,7 @@ describe('tutor rounds', () => {
 
   test('tutorModel option sonnet reaches the digest request', { options: { tutorModel: 'sonnet', tutorContext: 'digest' } }, async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, completes: [reply(quiz(5), DIGEST_CALL)] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, completes: [reply(quiz(5), DIGEST_CALL)] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -624,7 +654,7 @@ describe('tutor rounds', () => {
 
   test('nothing-to-fork falls back to one digest call', { plugins: [PROBE] }, async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [{ answer: { isAnswered: false, reason: 'nothing-to-fork' } }], completes: [reply(quiz(5), DIGEST_CALL)] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [{ answer: { isAnswered: false, reason: 'nothing-to-fork' } }], completes: [reply(quiz(5), DIGEST_CALL)] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -639,7 +669,7 @@ describe('tutor rounds', () => {
 
   test('invalid fork reply falls back once; invalid digest shows the error with no third call', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [reply('Sure! Here are some questions.')], completes: [reply('{"v":1,"questions":[]}', DIGEST_CALL)] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [reply('Sure! Here are some questions.')], completes: [reply('{"v":1,"questions":[]}', DIGEST_CALL)] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -654,7 +684,7 @@ describe('tutor rounds', () => {
 
   test('fork rate_limit shows the error without a digest call', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [failing(429, 'rate_limit')], completes: [reply(quiz(5), DIGEST_CALL)] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [failing(429, 'rate_limit')], completes: [reply(quiz(5), DIGEST_CALL)] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -670,7 +700,7 @@ describe('tutor rounds', () => {
 
   test('a fork miss latches the digest until Claude responds again', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [reply(quiz(5), COLD_FORK)], completes: [reply(quiz(5), DIGEST_CALL)] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [reply(quiz(5), COLD_FORK)], completes: [reply(quiz(5), DIGEST_CALL)] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -695,7 +725,7 @@ describe('tutor rounds', () => {
   for (const surface of SURFACES) {
     test(`stopping a slow fork returns home and the late reply changes nothing but spend (${surface})`, async ($, on) => {
       const clock = mock.clock(on)
-      const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 30_000 }], clock })
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 30_000 }], clock })
       await start($)
       await warmUp($)
       const ui = await tutorTab($, surface)
@@ -719,7 +749,7 @@ describe('tutor rounds', () => {
 
   test('the fork watchdog falls back to the digest after 60s', { plugins: [PROBE] }, async ($, on) => {
     const clock = mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 90_000 }], completes: [reply(quiz(5), DIGEST_CALL)], clock })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 90_000 }], completes: [reply(quiz(5), DIGEST_CALL)], clock })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -742,7 +772,7 @@ describe('tutor rounds', () => {
   for (const surface of SURFACES) {
     test(`cancelling a digest returns home (${surface})`, { options: { tutorContext: 'digest' } }, async ($, on) => {
       const clock = mock.clock(on)
-      const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 30_000 }], clock })
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 30_000 }], clock })
       await start($)
       await warmUp($)
       const ui = await tutorTab($, surface)
@@ -762,7 +792,7 @@ describe('tutor rounds', () => {
   test('a rejected tutor model shows model-refused', { options: { tutorModel: 'opus', tutorContext: 'digest' } }, async ($, on) => {
     mock.clock(on)
     // Beneath the plugin, the engine refuses to send the request at all.
-    engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, isCompleteRefused: true })
+    engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, isCompleteRefused: true })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -789,7 +819,7 @@ describe('tutor rounds', () => {
       '',
     ].join('\n')
     const { record } = engine(on, {
-      saved: { tutorConsent: 1 },
+      saved: { tutorConsent: 2 },
       git: { log: COMMITS, 'rev-parse': '\n', 'name-status': 'M\0hooks/tutor.ts\0M\0.env\0', diff, numstat: '1\t0\thooks/tutor.ts\n1\t0\t.env\n' },
       messages: [
         { role: 'user', text: 'Add the tutor tab please', toolUses: [] },
@@ -824,7 +854,7 @@ describe('tutor rounds', () => {
     // What git would print for the renamed file if it were asked: its content must never be asked for.
     const diff = ['diff --git a/config.txt b/config.txt', 'new file mode 100644', '--- /dev/null', '+++ b/config.txt', '@@ -0,0 +1 @@', '+API_TOKEN=renamed-env-content', ''].join('\n')
     const { record } = engine(on, {
-      saved: { tutorConsent: 1 },
+      saved: { tutorConsent: 2 },
       git: { log: COMMITS, 'rev-parse': '\n', 'name-status': 'R100\0.env\0config.txt\0', diff, numstat: '1\t0\tconfig.txt\n' },
       completes: [reply(quiz(5), DIGEST_CALL)],
     })
@@ -845,7 +875,7 @@ describe('tutor rounds', () => {
   test('the digest reads at most two new touched files and never a secret-looking one', { options: { tutorContext: 'digest' } }, async ($, on) => {
     mock.clock(on)
     const { record } = engine(on, {
-      saved: { tutorConsent: 1 },
+      saved: { tutorConsent: 2 },
       git: {
         log: COMMITS,
         'rev-parse': '\n',
@@ -882,7 +912,7 @@ describe('tutor rounds', () => {
   test('the digest never reads a new file that is a link, lands outside the project or is large', { options: { tutorContext: 'digest' } }, async ($, on) => {
     mock.clock(on)
     const { record } = engine(on, {
-      saved: { tutorConsent: 1 },
+      saved: { tutorConsent: 2 },
       git: {
         log: COMMITS,
         'rev-parse': '\n',
@@ -915,7 +945,7 @@ describe('tutor rounds', () => {
 
   test('a due card is replayed third in a new round, and the model writes one fewer', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck }, forks: [reply(quiz(5))] })
+    const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck }, forks: [reply(quiz(5))] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -934,7 +964,7 @@ describe('tutor rounds', () => {
 
   test('session end mid-round drops the late reply and keeps progress', { options: { tutorContext: 'digest' } }, async ($, on) => {
     const clock = mock.clock(on)
-    const { store } = engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 30_000 }], clock })
+    const { store } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 30_000 }], clock })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -953,7 +983,7 @@ describe('tutor rounds', () => {
 
   test('review round from the deck makes zero model calls and moves the card up', async ($, on) => {
     mock.clock(on)
-    const { record, store } = engine(on, { saved: { tutorConsent: 1, tutorProgress: savedDeck } })
+    const { record, store } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
     await start($)
     const ui = await tutorTab($)
     await ui.press({ key: 'review' })
@@ -973,7 +1003,7 @@ describe('tutor rounds', () => {
 
   test('retrying missed questions replays them locally for no XP', async ($, on) => {
     mock.clock(on)
-    const { record, store } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))] })
+    const { record, store } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -992,7 +1022,7 @@ describe('tutor rounds', () => {
 
   test('a second start while one is written is turned away', async ($, on) => {
     const clock = mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 30_000 }], clock })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 30_000 }], clock })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1007,7 +1037,7 @@ describe('tutor rounds', () => {
 
   test('/mochi tutor stop cancels a round being written, and ends one on screen', { options: { tutorContext: 'digest' } }, async ($, on) => {
     const clock = mock.clock(on)
-    engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 30_000 }, reply(quiz(5), DIGEST_CALL)], clock })
+    engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 30_000 }, reply(quiz(5), DIGEST_CALL)], clock })
     await start($)
     await warmUp($)
     expect((await $.command.run(mochi('tutor start'))).text).toBe('Tutor round starting in its tab.')
@@ -1053,7 +1083,7 @@ describe('tutor grading and follow-ups', () => {
   for (const surface of SURFACES) {
     test(`typing an answer calls the grader with the masked text and shows the points (${surface})`, async ($, on) => {
       mock.clock(on)
-      const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, false])] })
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [grade([true, false])] })
       await start($)
       await warmUp($)
       const ui = await tutorTab($, surface)
@@ -1088,7 +1118,7 @@ describe('tutor grading and follow-ups', () => {
   test('a failed grade offers self-grading', async ($, on) => {
     mock.clock(on)
     // A reply that is no grade, then an API error: both leave the grading to the learner.
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3)), reply(quiz(3))], completes: [reply('I think it is fine.', GRADE_CALL), failing(500, 'server_error')] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3)), reply(quiz(3))], completes: [reply('I think it is fine.', GRADE_CALL), failing(500, 'server_error')] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1111,7 +1141,7 @@ describe('tutor grading and follow-ups', () => {
 
   test('a too-short answer makes no call', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1127,7 +1157,7 @@ describe('tutor grading and follow-ups', () => {
 
   test('cancelling a grade hands it to the learner and the late grade changes nothing but spend', { plugins: [PROBE] }, async ($, on) => {
     const clock = mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [{ ...grade([true, true]), after: 10_000 }], clock })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [{ ...grade([true, true]), after: 10_000 }], clock })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1152,7 +1182,7 @@ describe('tutor grading and follow-ups', () => {
 
   test('typed text survives a redraw', async ($, on) => {
     const clock = mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1183,7 +1213,7 @@ describe('tutor follow-ups and model text', () => {
   for (const surface of SURFACES) {
     test(`a follow-up makes one capped call and the field disappears after two (${surface})`, async ($, on) => {
       mock.clock(on)
-      const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))], completes: [reply(ASK_REPLY, ASK_CALL), reply('The index lock is held only briefly.', ASK_CALL)] })
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))], completes: [reply(ASK_REPLY, ASK_CALL), reply('The index lock is held only briefly.', ASK_CALL)] })
       await start($)
       await warmUp($)
       const ui = await tutorTab($, surface)
@@ -1221,7 +1251,7 @@ describe('tutor follow-ups and model text', () => {
 
   test('a failed follow-up says so and keeps the count', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))], completes: [failing(500, 'server_error'), reply(' \n  ', ASK_CALL), reply(ASK_REPLY, ASK_CALL)] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))], completes: [failing(500, 'server_error'), reply(' \n  ', ASK_CALL), reply(ASK_REPLY, ASK_CALL)] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1246,7 +1276,7 @@ describe('tutor follow-ups and model text', () => {
 
   test('cancelling a follow-up keeps the count and drops the late reply', async ($, on) => {
     const clock = mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))], completes: [{ ...reply(ASK_REPLY, ASK_CALL), after: 10_000 }], clock })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))], completes: [{ ...reply(ASK_REPLY, ASK_CALL), after: 10_000 }], clock })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1281,7 +1311,7 @@ describe('tutor follow-ups and model text', () => {
     ].join('\n')
     const onFile = JSON.stringify({ v: 1, questions: [0, 1, 2].map(i => ({ ...choiceQ(i), file: 'hooks/tutor.ts' })) })
     const { record } = engine(on, {
-      saved: { tutorConsent: 1 },
+      saved: { tutorConsent: 2 },
       git: { log: COMMITS, 'rev-parse': '\n', 'name-status': 'M\0hooks/tutor.ts\0', diff, numstat: '1\t0\thooks/tutor.ts\n' },
       completes: [reply(onFile, DIGEST_CALL), reply(ASK_REPLY, ASK_CALL)],
     })
@@ -1308,7 +1338,7 @@ describe('tutor follow-ups and model text', () => {
     }
     const round = JSON.stringify({ v: 1, questions: [hostile, choiceQ(1), explainQ] })
     const { record } = engine(on, {
-      saved: { tutorConsent: 1 },
+      saved: { tutorConsent: 2 },
       forks: [reply(round)],
       completes: [
         reply('See [this link](https://evil.example/y) and \u001b]8;;https://evil.example\u0007here\u001b]8;;\u0007.', ASK_CALL),
@@ -1344,7 +1374,7 @@ describe('tutor follow-ups and model text', () => {
       { ...choiceQ(1), file: 'hooks/other.ts' },
       explainQ,
     ]
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(JSON.stringify({ v: 1, questions }))] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(JSON.stringify({ v: 1, questions }))] })
     await start($)
     await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/tutor.ts', old_string: 'a', new_string: 'b' })
     await warmUp($)
@@ -1373,7 +1403,7 @@ describe('tutor follow-ups and model text', () => {
 describe('tutor explain on mobile', () => {
   test('an explain question completes with buttons only and no grade call', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($, 'mobile')

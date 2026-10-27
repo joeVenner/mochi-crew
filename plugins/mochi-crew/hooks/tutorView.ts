@@ -303,7 +303,7 @@ const consentScreen = (ctx: TutorViewContext): TutorScreen => {
       textRow('intro', 'Mochi quizzes you on this project and on what Claude changed, so you understand the code you are shipping.', 'value'),
       textRow('calls', 'Model calls happen only when you press:', 'label'),
       textRow('warm', "· warm: this chat is asked one question, reused from Claude's prompt cache", 'dim'),
-      textRow('digest', `· else: a digest (≤16k chars) to ${model}: commit subjects, the diff of touched files, short chat excerpts. Secrets masked; .env, keys, certs left out.`, 'dim'),
+      textRow('digest', `· else: a digest (≤16k chars) to ${model}: all uncommitted changes in this folder (Claude's files first, removed lines too), new files Claude wrote, recent commit subjects, short chat excerpts. Common secret patterns masked; .env, keys, certs left out.`, 'dim'),
       textRow('answers', '· your typed answers, for grading', 'dim'),
     ], ctx, fold),
     controls: [
