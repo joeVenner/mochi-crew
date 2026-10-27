@@ -658,7 +658,7 @@ describe('tutor view', () => {
     expect(textOf(rowKeyed(explainBack, 'ref'))).toBe('ref     It matches the longest worktree root that contains the path.')
     expect(textOf(rowKeyed(explainBack, 'point:0'))).toBe('· longest matching root')
     expect(textOf(rowKeyed(explainBack, 'point:1'))).toBe('· falls back to the main root')
-    expect(textOf(rowKeyed(explainBack, 'not-due'))).toBe('not due yet: good keeps it in box 2')
+    expect(textOf(rowKeyed(explainBack, 'not-due'))).toBe('not due yet: kept in box 2')
     const lineFront = tutorScreen({ phase: 'cards', flash: flashOf({ index: 2 }) }, ctx({ project, bodyRows: 40 }))
     expect(textOf(lineFront.header[0])).toBe('▍ card 3/3 · box ●●● · due')
     expect(lineFront.code?.caption).toBe('src/x.ts · line 9')

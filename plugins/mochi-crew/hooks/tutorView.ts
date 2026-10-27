@@ -928,7 +928,7 @@ const cardScreen = (flash: TutorFlash, ctx: TutorViewContext): TutorScreen => {
     return asCard(front, question, ctx, 'front')
   }
   // Good on a card not yet due changes nothing (A.5), so the back says so before it is pressed.
-  const notDue = isCardDue(ctx.project, card) ? [] : [textRow('not-due', `not due yet: good keeps it in box ${card.box}`, 'dim')]
+  const notDue = isCardDue(ctx.project, card) ? [] : [textRow('not-due', `not due yet: kept in box ${card.box}`, 'dim')]
   const back: TutorScreen = {
     header: headerOf(header, ctx, fold),
     body: bodyOf([...preamble, textRow('stem', clean(question.prompt), 'dim'), ...cardAnswerRows(question), ...notDue], ctx, fold),
