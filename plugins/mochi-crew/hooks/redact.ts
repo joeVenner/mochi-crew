@@ -14,6 +14,8 @@ const SECRET_WORD = /key|secret|token|passw(?:or)?d|pwd|credential|auth(?!or)/i
 // Names that are a secret wherever they stand; `key` and `auth` are too common in code
 // (`primaryKey`, `authMode`) to be trusted away from a key line.
 const STRONG_SECRET_WORD = /secret|token|passw(?:or)?d|pwd|credential/i
+// A bare `pass` only as the name's last word (`db_pass`, `smtpPass`), never `compass` or `bypass`.
+const PASS_NAME = /(?:^|[_.-])(?:pass|Pass|PASS)$|[a-z0-9]Pass$/
 // Unquoted values that are a type, a keyword or an empty value, never a secret.
 const PLAIN_VALUE = /^(?:string|number|boolean|bigint|symbol|object|unknown|any|never|void|undefined|null|true|false|none|nil|~)$/i
 // A value read from somewhere else names no secret itself, and masking it hides the lesson.
@@ -33,7 +35,7 @@ const assignedSecret = (match: string, ...groups: unknown[]): string => {
   // replace passes the groups (an unmatched one undefined), then the offset and the whole text.
   const [lead = '', quote = '', name = '', before = '', separator = '', after = ''] = groups.slice(0, 6).map(group => (typeof group === 'string' ? group : ''))
   const [value, offset, whole] = groups.slice(6, 9)
-  if (typeof value !== 'string' || typeof offset !== 'number' || typeof whole !== 'string' || !SECRET_WORD.test(name)) return match
+  if (typeof value !== 'string' || typeof offset !== 'number' || typeof whole !== 'string' || !(SECRET_WORD.test(name) || PASS_NAME.test(name))) return match
   const head = `${lead}${quote}${name}${quote}${before}${separator}${after}`
   if (/^["'`]/.test(value)) return `${head}${value[0]}${MASK}${value[0]}`
   if (PLAIN_VALUE.test(value) || LOOKED_UP.test(value)) return match
@@ -42,7 +44,7 @@ const assignedSecret = (match: string, ...groups: unknown[]): string => {
   const isKeyLine = LINE_START.test(whole.slice(lineStart, offset + lead.length))
   const next = whole[offset + match.length]
   const isValueEnd = next === undefined || next === '#' || next === '`' || /\s/.test(next)
-  return isValueEnd && (isKeyLine || STRONG_SECRET_WORD.test(name)) ? `${head}${MASK}` : match
+  return isValueEnd && (isKeyLine || STRONG_SECRET_WORD.test(name) || PASS_NAME.test(name)) ? `${head}${MASK}` : match
 }
 
 /** Ordered: the specific shapes first, so a generic rule never half-masks a known token. */
