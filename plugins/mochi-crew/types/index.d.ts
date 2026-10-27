@@ -205,6 +205,19 @@ export type TutorFocus = 'recent' | 'turn' | 'project'
 /** Tutor: what kind of understanding a question checks, easiest first. */
 export type TutorTag = 'what' | 'how' | 'why' | 'what-if'
 
+/**
+ * Tutor: a code card, one hunk of masked diff drawn under a question. Never model-written: the
+ * plugin cuts it from a diff it produced, and the model only points at a line.
+ */
+export type TutorCode = {
+  /** The project-relative path the hunk is from, one the round was allowed to name. */
+  readonly file: string
+  /** One unified-diff hunk, its `@@` header recomputed to fit, at most CODE_WINDOW lines. */
+  readonly diff: string
+  /** The line the question points at, as numbered in the file (the old side for a removed line). */
+  readonly focusLine?: number
+}
+
 /** Tutor: the fields every question kind shares. */
 export type TutorQuestionBase = {
   readonly id: string
