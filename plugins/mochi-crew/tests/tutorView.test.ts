@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorAnswer, TutorCode, TutorProject, TutorRound, TutorState } from '../types'
+import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorAnswer, TutorCard, TutorCode, TutorFlash, TutorProject, TutorRound, TutorState } from '../types'
 import { CODE_WINDOW, isCodeDiff, lineCode, parseHunks, quoteCode } from '../hooks/tutorCode'
 import { FRESH_PROJECT } from '../hooks/tutorProgress'
 import { EMPTY_USAGE } from '../hooks/tutorRound'
@@ -105,6 +105,15 @@ const lineQuestion = (quotes: readonly string[], answer = 1): LineQuestion => {
   }
 }
 
+/** A due choice in box 1, an explain in box 2 not yet due, and a due line card in box 3. */
+const CARDS: readonly [TutorCard, TutorCard, TutorCard] = [
+  { question: choice(), box: 1, dueRound: 2 },
+  { question: explain(), box: 2, dueRound: 9 },
+  { question: { ...lineQuestion(['const old = 1', 'const fresh = 2', 'const more = 3']), id: 'line' }, box: 3, dueRound: 0 },
+]
+
+const cardsProject = (deck: readonly TutorCard[] = CARDS): TutorProject => ({ ...FRESH_PROJECT, rounds: 4, deck })
+
 /** The code lines a screen draws, its `@@` header left out. */
 const codeLines = (screen: TutorScreen): readonly string[] => screen.code?.source.split('\n').slice(1) ?? []
 
@@ -135,7 +144,15 @@ const everyState = (): readonly TutorState[] => [
   },
   { phase: 'error', failure: { kind: 'timeout' }, focus: 'recent', canTryDigest: true },
   { phase: 'error', failure: { kind: 'bad-reply', why: 'too-few' }, focus: 'recent', canTryDigest: false },
+  { phase: 'cards', flash: flashOf() },
+  { phase: 'cards', flash: flashOf({ isFlipped: true }) },
+  { phase: 'cards-done', flash: flashOf({ ratings: [{ id: 'r1:0', rating: 'good', wasDue: true }] }), xp: 1 },
 ]
+
+/** A flashcard session over the CARDS deck. */
+function flashOf(over: Partial<TutorFlash> = {}): TutorFlash {
+  return { ids: ['r1:0', 'r1:1', 'line'], index: 0, isFlipped: false, ratings: [], startedAt: 0, focus: 'recent', xpLeft: 10, ...over }
+}
 
 const textOf = (row: TutorRow | undefined): string => row?.cells.map(part => part.text).join('') ?? ''
 const allRows = (screen: TutorScreen): readonly TutorRow[] => [...screen.header, ...screen.body]
@@ -555,6 +572,108 @@ describe('tutor view', () => {
     expect(tutorScreen({ phase: 'question', round: round() }, ctx()).code).toBe(undefined)
   })
 
+  test('every flashcard screen draws its controls with a deck, on every surface and fold', async () => {
+    const project = cardsProject()
+    for (const surface of SURFACES) {
+      for (const state of everyState().filter(held => held.phase === 'cards' || held.phase === 'cards-done')) {
+        for (const bodyRows of [30, 10, 5]) {
+          const screen = tutorScreen(state, ctx({ surface, bodyRows, project }))
+          const keys = hotkeys(screen)
+          expect(new Set(keys).size).toBe(keys.length)
+          expect(screen.controls.some(control => control.key === screen.focusKey)).toBe(true)
+          expect(screen.input).toBe(undefined)
+        }
+      }
+    }
+  })
+
+  test('a choice card: front with its prompt and f, back with the answer, its why and 1 2 3', async () => {
+    const project = cardsProject()
+    const front = tutorScreen({ phase: 'cards', flash: flashOf() }, ctx({ project }))
+    expect(textOf(front.header[0])).toBe('▍ card 1/3 · box ●○○ · due')
+    expect(textOf(rowKeyed(front, 'stem'))).toBe('Why does gitOutput pass --no-optional-locks to every git call?')
+    expect(rowKeyed(front, 'answer')).toBe(undefined)
+    expect(front.controls.map(control => [control.hotkey, control.label])).toEqual([['f', 'flip'], ['x', 'end']])
+    expect(front.controls[0]?.action).toEqual({ kind: 'flip' })
+    expect(front.controls[1]?.action).toEqual({ kind: 'cards-end' })
+    expect(front.focusKey).toBe('flip')
+    expect(front.frame).toEqual({ tone: 'front' })
+    const back = tutorScreen({ phase: 'cards', flash: flashOf({ isFlipped: true }) }, ctx({ project }))
+    expect(rowKeyed(back, 'stem')?.cells[0]?.tone).toBe('dim')
+    const answer = rowKeyed(back, 'answer')
+    expect(textOf(answer)).toBe('answer  So a background refresh never holds index.lock against your own git')
+    expect(answer?.cells.at(-1)?.tone).toBe('good')
+    expect(textOf(rowKeyed(back, 'why'))).toBe('why     A refresh runs every few seconds.')
+    expect(back.controls.map(control => [control.hotkey, control.label])).toEqual([['1', 'again'], ['2', 'hard'], ['3', 'good'], ['x', 'end']])
+    expect(back.controls[2]?.action).toEqual({ kind: 'rate', rating: 'good' })
+    expect(back.focusKey).toBe('rate:good')
+    expect(back.frame).toEqual({ tone: 'back' })
+    expect(rowKeyed(back, 'not-due')).toBe(undefined)
+  })
+
+  test('an explain card shows the reference and key points; a line card the line and its why', async () => {
+    const project = cardsProject()
+    const explainBack = tutorScreen({ phase: 'cards', flash: flashOf({ index: 1, isFlipped: true }) }, ctx({ project }))
+    expect(textOf(explainBack.header[0])).toBe('▍ card 2/3 · box ●●○ · not due')
+    expect(textOf(rowKeyed(explainBack, 'ref'))).toBe('ref     It matches the longest worktree root that contains the path.')
+    expect(textOf(rowKeyed(explainBack, 'point:0'))).toBe('· longest matching root')
+    expect(textOf(rowKeyed(explainBack, 'point:1'))).toBe('· falls back to the main root')
+    expect(textOf(rowKeyed(explainBack, 'not-due'))).toBe('not due yet: good keeps it in box 2')
+    const lineFront = tutorScreen({ phase: 'cards', flash: flashOf({ index: 2 }) }, ctx({ project, bodyRows: 40 }))
+    expect(textOf(lineFront.header[0])).toBe('▍ card 3/3 · box ●●● · due')
+    expect(lineFront.code?.caption).toBe('src/x.ts · line 9')
+    expect(lineFront.code !== undefined && isCodeDiff(lineFront.code.source)).toBe(true)
+    const lineBack = tutorScreen({ phase: 'cards', flash: flashOf({ index: 2, isFlipped: true }) }, ctx({ project, bodyRows: 40 }))
+    expect(textOf(rowKeyed(lineBack, 'answer'))).toBe('line 9: const fresh = 2')
+    expect(textOf(rowKeyed(lineBack, 'why'))).toBe('why     reason 1')
+    expect(lineBack.code).not.toBe(undefined)
+    // The removed line shares the number, so its answer says it was the old side's.
+    const oldAnswer = { ...CARDS[2], question: { ...lineQuestion(['const old = 1', 'const fresh = 2']), id: 'line', answer: 0 } } satisfies TutorCard
+    const removed = tutorScreen({ phase: 'cards', flash: flashOf({ index: 2, isFlipped: true }) }, ctx({ project: cardsProject([CARDS[0], CARDS[1], oldAnswer]) }))
+    expect(textOf(rowKeyed(removed, 'answer'))).toBe('old line 9: const old = 1')
+  })
+
+  test('a card gone from the deck is skipped, and a session with none left offers only end', async () => {
+    const without = cardsProject([CARDS[1], CARDS[2]])
+    const skipped = tutorScreen({ phase: 'cards', flash: flashOf() }, ctx({ project: without }))
+    expect(textOf(skipped.header[0])).toContain('card 2/3')
+    const none = tutorScreen({ phase: 'cards', flash: flashOf({ index: 1 }) }, ctx({ project: cardsProject([CARDS[0]]) }))
+    expect(allText(none)).toContain('The cards left in this session are no longer in the deck.')
+    expect(none.controls.map(control => control.action)).toEqual([{ kind: 'cards-end' }])
+  })
+
+  test('cards-done tallies the ratings, the XP and what was mastered', async () => {
+    const ratings = [
+      ...Array.from({ length: 4 }, (_, index) => ({ id: `g${index}`, rating: 'good' as const, wasDue: true })),
+      { id: 'h0', rating: 'hard' as const, wasDue: true },
+      { id: 'h1', rating: 'hard' as const, wasDue: false },
+      { id: 'a0', rating: 'again' as const, wasDue: true },
+    ]
+    const flash = flashOf({ ids: ratings.map(rated => rated.id), ratings })
+    const deckOf = (ids: readonly string[]): TutorProject => cardsProject(ids.map(id => ({ question: choice({ id }), box: 1, dueRound: 9 })))
+    const all = tutorScreen({ phase: 'cards-done', flash, xp: 4 }, ctx({ project: deckOf(ratings.map(rated => rated.id)) }))
+    expect(textOf(rowKeyed(all, 'tally'))).toBe('Flashcards: 7 rated · 4 good · 2 hard · 1 again · +4 XP')
+    expect(all.controls.map(control => [control.hotkey, control.label, control.action.kind])).toEqual([['c', 'again', 'cards'], ['h', 'home', 'home'], ['x', 'close', 'close']])
+    expect(all.focusKey).toBe('cards')
+    // Three goods retired their cards from box 3.
+    const retired = tutorScreen({ phase: 'cards-done', flash, xp: 4 }, ctx({ project: deckOf(['g3', 'h0', 'h1', 'a0']) }))
+    expect(textOf(rowKeyed(retired, 'tally'))).toBe('Flashcards: 7 rated · 4 good · 2 hard · 1 again · +4 XP · 3 now mastered')
+    // Zero counts are left out; an empty deck offers no second session.
+    const goods = flashOf({ ids: ['g0'], ratings: [{ id: 'g0', rating: 'good', wasDue: false }] })
+    const empty = tutorScreen({ phase: 'cards-done', flash: goods, xp: 0 }, ctx())
+    expect(textOf(rowKeyed(empty, 'tally'))).toBe('Flashcards: 1 rated · 1 good · +0 XP')
+    expect(empty.controls.map(control => control.hotkey)).toEqual(['h', 'x'])
+    expect(empty.focusKey).toBe('home')
+  })
+
+  test('flashcards draw their cards without control characters', async () => {
+    const hostile: TutorCard = { question: choice({ id: 'r1:0', prompt: 'Why \u001b[31mred\u001b[0m\nnow?', options: ['a\u0007', 'b'], why: ['x\u0000', 'y'] }), box: 1, dueRound: 0 }
+    for (const isFlipped of [false, true]) {
+      const screen = tutorScreen({ phase: 'cards', flash: flashOf({ isFlipped }) }, ctx({ project: cardsProject([hostile]) }))
+      for (const text of allRows(screen).flatMap(line => line.cells.map(part => part.text))) expect(/[\u0000-\u001f\u007f]/.test(text)).toBe(false)
+    }
+  })
+
   test('tutorHudLabel reads quizzing you q 2/5 during a round, null otherwise', async () => {
     const live = round({ index: 1, answers: [right] })
     expect(tutorHudLabel({ phase: 'question', round: live })).toBe('quizzing you · q 2/5')
@@ -564,5 +683,7 @@ describe('tutor view', () => {
     expect(tutorHudLabel({ phase: 'home', focus: 'recent', isDigestOnly: false })).toBe(null)
     expect(tutorHudLabel({ phase: 'loading', epoch: 1, focus: 'recent', source: 'fork', since: 0 })).toBe(null)
     expect(tutorHudLabel({ phase: 'summary', round: live, xp: 5, levelBefore: 1, levelAfter: 1, wasForkMiss: false })).toBe(null)
+    expect(tutorHudLabel({ phase: 'cards', flash: flashOf({ index: 1 }) })).toBe('flashcards · card 2/3')
+    expect(tutorHudLabel({ phase: 'cards-done', flash: flashOf(), xp: 0 })).toBe(null)
   })
 })

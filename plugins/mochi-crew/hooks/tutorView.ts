@@ -3,7 +3,9 @@ import type {
   OptionQuestion,
   ExplainQuestion,
   LineQuestion,
+  TutorCard,
   TutorCode,
+  TutorFlash,
   TutorAnswer,
   TutorFocus,
   TutorOutcome,
@@ -18,6 +20,7 @@ import type {
 import { safeText } from './fileTree'
 import { gutter, ruleFor } from './hud'
 import { formatTokens } from './meter'
+import { flashCurrent, isCardDue } from './tutorCards'
 import { CODE_WINDOW, codeWindow, findQuote, parseHunks, shownNumber } from './tutorCode'
 import type { Hunk } from './tutorCode'
 import type { TutorPlan } from './tutorPlan'
@@ -841,6 +844,120 @@ const summaryScreen = (state: Extract<TutorState, { phase: 'summary' }>, ctx: Tu
   }
 }
 
+// ── flashcards (A.8) ───────────────────────────────────────────────────────
+
+const boxPips = (box: TutorCard['box']): string => `${'●'.repeat(box)}${'○'.repeat(BOXES - box)}`
+
+/** `card 3/10 · box ●●○ · due`: where in the session, how far the card has come, and whether it is due. */
+const cardHeader = (position: number, total: number, card: TutorCard, ctx: TutorViewContext): TutorRow => row('header', [
+  cell('▍ ', 'accent'),
+  cell(`card ${position}/${total}`, 'strong'),
+  cell(' · box ', 'dim'),
+  cell(boxPips(card.box), 'accent'),
+  cell(isCardDue(ctx.project, card) ? ' · due' : ' · not due', 'dim'),
+])
+
+const cardsEndControl: TutorControl = { key: 'end', label: 'end', hotkey: 'x', action: { kind: 'cards-end' } }
+
+/** The back of a card: the answer for its kind, then its reason. */
+const cardAnswerRows = (question: TutorQuestion): readonly TutorRow[] => {
+  switch (question.kind) {
+    case 'choice':
+      return [labelled('answer', 'answer', clean(question.options[question.answer] ?? ''), 'good'), labelled('why', 'why', clean(question.why[question.answer] ?? ''))]
+    case 'line': {
+      const number = question.lineNumbers[question.answer] ?? 0
+      const text = clean(question.options[question.answer] ?? '')
+      const where = isRemovedLine(question, question.answer) ? `old line ${number}` : `line ${number}`
+      return [textRow('answer', `${where}: ${text}`, 'good'), labelled('why', 'why', clean(question.why[question.answer] ?? ''))]
+    }
+    case 'explain':
+      return [refRow(question), ...pointRows(question, undefined)]
+  }
+}
+
+const RATINGS: readonly { readonly rating: FlashRating; readonly hotkey: string }[] = [
+  { rating: 'again', hotkey: '1' },
+  { rating: 'hard', hotkey: '2' },
+  { rating: 'good', hotkey: '3' },
+]
+
+/** A session whose remaining cards have all left the deck: nothing to flip, only a way out. */
+const goneCardsScreen = (ctx: TutorViewContext): TutorScreen => {
+  const fold = tutorFold(ctx.bodyRows)
+  return {
+    header: headerOf(row('header', titleCells('Flashcards')), ctx, fold),
+    body: bodyOf([textRow('gone', 'The cards left in this session are no longer in the deck.', 'dim')], ctx, fold),
+    controls: [cardsEndControl],
+    focusKey: 'end',
+  }
+}
+
+/**
+ * A flashcard face (A.8). The front shows the prompt and its code card, with `f` to flip; the
+ * back dims the prompt and gives the answer, then `1 again`, `2 hard` and `3 good`. A card the
+ * deck no longer holds is skipped. Nothing here is sent anywhere.
+ */
+const cardScreen = (flash: TutorFlash, ctx: TutorViewContext): TutorScreen => {
+  const current = flashCurrent(flash, ctx.project.deck)
+  if (current === null) return goneCardsScreen(ctx)
+  const fold = tutorFold(ctx.bodyRows)
+  const { card } = current
+  const question = card.question
+  const header = cardHeader(current.index + 1, flash.ids.length, card, ctx)
+  const place = placeText(question)
+  const preamble = place === null || fold === 'folded' ? [] : [textRow('file', place, 'dim', false)]
+  if (!flash.isFlipped) {
+    const front: TutorScreen = {
+      header: headerOf(header, ctx, fold),
+      body: bodyOf([...preamble, textRow('stem', clean(question.prompt), 'value')], ctx, fold),
+      controls: [{ key: 'flip', label: 'flip', hotkey: 'f', action: { kind: 'flip' } }, cardsEndControl],
+      focusKey: 'flip',
+    }
+    return asCard(front, question, ctx, 'front')
+  }
+  // Good on a card not yet due changes nothing (A.5), so the back says so before it is pressed.
+  const notDue = isCardDue(ctx.project, card) ? [] : [textRow('not-due', `not due yet: good keeps it in box ${card.box}`, 'dim')]
+  const back: TutorScreen = {
+    header: headerOf(header, ctx, fold),
+    body: bodyOf([...preamble, textRow('stem', clean(question.prompt), 'dim'), ...cardAnswerRows(question), ...notDue], ctx, fold),
+    controls: [
+      ...RATINGS.map(({ rating, hotkey }): TutorControl => ({ key: `rate:${rating}`, label: rating, hotkey, action: { kind: 'rate', rating } })),
+      cardsEndControl,
+    ],
+    focusKey: 'rate:good',
+  }
+  return asCard(back, question, ctx, 'back')
+}
+
+/**
+ * `Flashcards: 7 rated · 4 good · 2 hard · 1 again · +4 XP`, a zero count left out, then how
+ * many cards a good retired (rated good when due, and gone from the deck since).
+ */
+const cardsTally = (flash: TutorFlash, xp: number, ctx: TutorViewContext): string => {
+  const count = (rating: FlashRating): number => flash.ratings.filter(rated => rated.rating === rating).length
+  const counts = RATINGS.map(({ rating }) => rating).reverse().flatMap(rating => (count(rating) === 0 ? [] : [`${count(rating)} ${rating}`]))
+  const held = new Set(ctx.project.deck.map(card => card.question.id))
+  const mastered = new Set(flash.ratings.filter(rated => rated.rating === 'good' && rated.wasDue && !held.has(rated.id)).map(rated => rated.id)).size
+  return [`Flashcards: ${flash.ratings.length} rated`, ...counts, `+${xp} XP`, ...(mastered > 0 ? [`${mastered} now mastered`] : [])].join(' · ')
+}
+
+/** After a session: the tally, then another session, Home or close. */
+const cardsDoneScreen = (state: Extract<TutorState, { phase: 'cards-done' }>, ctx: TutorViewContext): TutorScreen => {
+  const fold = tutorFold(ctx.bodyRows)
+  const hasCards = ctx.project.deck.length > 0
+  return {
+    header: headerOf(row('header', titleCells('Mochi Tutor')), ctx, fold),
+    body: bodyOf([textRow('tally', cardsTally(state.flash, state.xp, ctx), 'value')], ctx, fold),
+    controls: [
+      // Every card may have retired; another session then has nothing to flip.
+      ...(hasCards ? [{ key: 'cards', label: 'again', hotkey: 'c', action: { kind: 'cards' } } satisfies TutorControl] : []),
+      { key: 'home', label: 'home', hotkey: 'h', action: { kind: 'home' } },
+      closeControl('close'),
+    ],
+    focusKey: hasCards ? 'cards' : 'home',
+  }
+}
+
 /** S7: one line naming the cause, then the ways forward. */
 const errorScreen = (state: Extract<TutorState, { phase: 'error' }>, ctx: TutorViewContext): TutorScreen => {
   const fold = tutorFold(ctx.bodyRows)
@@ -874,7 +991,7 @@ export const tutorScreen = (state: TutorState, ctx: TutorViewContext): TutorScre
     case 'grading': return gradingScreen(state, ctx)
     case 'summary': return summaryScreen(state, ctx)
     case 'error': return errorScreen(state, ctx)
-    case 'cards':
-    case 'cards-done': return emptyRoundScreen(ctx)
+    case 'cards': return cardScreen(state.flash, ctx)
+    case 'cards-done': return cardsDoneScreen(state, ctx)
   }
 }
