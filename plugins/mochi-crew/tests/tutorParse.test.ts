@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ChoiceQuestion, TutorQuestion } from '../types'
+import type { ChoiceQuestion, LineQuestion, TutorQuestion } from '../types'
 import { MASK } from '../hooks/redact'
-import { MAX_REPLY_CHARS, QUIZ_CAPS, cleanModelText, extractJsonObject, parseGrade, parseRound, shuffleChoice } from '../hooks/tutorParse'
+import { CODE_LINE_MAX, isCodeDiff, parseHunks } from '../hooks/tutorCode'
+import type { CodeLookup } from '../hooks/tutorCode'
+import { MAX_REPLY_CHARS, QUIZ_CAPS, anchoredFiles, cleanModelText, extractJsonObject, parseGrade, parseRound, shuffleChoice } from '../hooks/tutorParse'
 import type { ParseOutcome } from '../hooks/tutorParse'
 
 type RawQuestion = Readonly<Record<string, unknown>>
@@ -103,7 +105,8 @@ describe('tutor parse', () => {
     expect(whyOf(parse('I cannot write a quiz today.'))).toBe('no-json')
     expect(whyOf(parse('{"v":1, questions: []}'))).toBe('bad-json')
     expect(whyOf(parse(`${reply(fiveQuestions())}${' '.repeat(MAX_REPLY_CHARS)}`))).toBe('too-long')
-    expect(whyOf(parse(reply(fiveQuestions(), { v: 2 })))).toBe('bad-version')
+    expect(whyOf(parse(reply(fiveQuestions(), { v: 3 })))).toBe('bad-version')
+    expect(whyOf(parse(reply(fiveQuestions(), { v: '2' })))).toBe('bad-version')
     expect(whyOf(parse('{"questions":[]}'))).toBe('bad-version')
     expect(whyOf(parse('{"v":1,"questions":{}}'))).toBe('bad-shape')
     expect(whyOf(parse(reply([choice(), choice(), choice({ answer: 9 }), 'junk', null])))).toBe('too-few')
@@ -235,5 +238,160 @@ describe('tutor parse', () => {
     expect(parseGrade('All good, well done.', 1)).toBeNull()
     expect(parseGrade('{"v":1,"points":[true,}', 1)).toBeNull()
     expect(parseGrade('{"v":1,"points":[],"note":"x"}', 0)).toBeNull()
+  })
+
+  describe('code cards (v2)', () => {
+    const HUNK = [
+      '@@ -10,4 +10,6 @@ export const gitOutput = () => {',
+      ' const run = makeRunner()',
+      "-const args = ['status']",
+      "+const args = ['--no-optional-locks', 'status']",
+      '+\tconst timeout = GIT_MS',
+      ' return run(args, timeout)',
+      ' }',
+      '+export const done = true',
+    ].join('\n')
+    const LOOKUP: CodeLookup = file => (file === 'hooks/register.tsx' ? parseHunks(HUNK) : [])
+    const v2 = (questions: readonly unknown[]): string => reply(questions, { v: 2 })
+    const parseV2 = (text: string, lookup: CodeLookup = LOOKUP): ParseOutcome => parseRound(text, 'r7', ALLOWED, 5, 0, lookup)
+    const fourthOf = (fourth: RawQuestion, lookup: CodeLookup = LOOKUP, v = 2): TutorQuestion | undefined =>
+      questionsOf(parseRound(reply([explain(), explain(), explain(), fourth], { v }), 'r7', ALLOWED, 5, 0, lookup))[3]
+    const line = (over: RawQuestion = {}): RawQuestion => ({
+      kind: 'line',
+      tag: 'how',
+      topic: 'git locks',
+      prompt: 'Which line keeps git from taking the index lock?',
+      at: { file: 'hooks/register.tsx' },
+      // The answer is first here but last in the file: the parser puts them in file order.
+      options: ["const args = ['--no-optional-locks', 'status']", 'const run = makeRunner()', 'return run(args, timeout)'],
+      answer: 0,
+      why: ['Right: the flag is set here.', 'Wrong: this only builds the runner.', 'Wrong: this only runs it.'],
+      hint: 'Look for a flag.',
+      ...over,
+    })
+    const asLine = (question: TutorQuestion | undefined): LineQuestion => {
+      if (question?.kind !== 'line') throw new Error('expected a line question')
+      return question
+    }
+
+    test('v1 and v2 replies are both read; v1 ignores anchors and line questions', async () => {
+      expect(questionsOf(parseV2(v2(fiveQuestions())))).toHaveLength(5)
+      const anchored = choice({ at: { file: 'hooks/register.tsx', quote: 'const run = makeRunner()' } })
+      expect(fourthOf(anchored, LOOKUP, 1)?.code).toBeUndefined()
+      expect(fourthOf(anchored, LOOKUP, 2)?.code).toBeDefined()
+      const old = parseRound(reply([explain(), explain(), explain(), line()]), 'r7', ALLOWED, 5, 0, LOOKUP)
+      expect(questionsOf(old)).toHaveLength(3)
+      expect(old.isValid && old.dropped).toBe(1)
+    })
+
+    test('a choice or explain anchor becomes a card drawn from the hunk', async () => {
+      const question = fourthOf(choice({ file: undefined, at: { file: 'hooks/register.tsx', quote: '  return   run(args, timeout) ' } }))
+      expect(question?.code?.file).toBe('hooks/register.tsx')
+      expect(question?.code?.focusLine).toBe(13)
+      expect(isCodeDiff(question?.code?.diff ?? '')).toBe(true)
+      expect(question?.code?.diff).toContain('\tconst timeout = GIT_MS')
+      // The card names its file, so the open action can follow it.
+      expect(question?.file).toBe('hooks/register.tsx')
+      // A removed line matches too, numbered on the old side.
+      expect(fourthOf(explain({ at: { file: 'hooks/register.tsx', quote: "const args = ['status']" } }))?.code?.focusLine).toBe(11)
+    })
+
+    test('a bad anchor drops only the card', async () => {
+      const bad: readonly unknown[] = [
+        { file: 'hooks/register.tsx', quote: 'nowhere in the diff' },
+        { file: 'hooks/fileTree.ts', quote: 'const run = makeRunner()' },
+        { file: 'secret/other.ts', quote: 'const run = makeRunner()' },
+        { file: 'hooks/register.tsx', quote: 'x'.repeat(CODE_LINE_MAX + 1) },
+        { file: 'hooks/register.tsx', quote: 42 },
+        { file: 'hooks/register.tsx' },
+        'hooks/register.tsx',
+        null,
+      ]
+      for (const at of bad) {
+        const question = fourthOf(choice({ at }))
+        expect(question?.kind).toBe('choice')
+        expect(question?.code).toBeUndefined()
+      }
+      expect(fourthOf(choice({ at: { file: 'hooks/register.tsx', quote: 'const run = makeRunner()' } }), () => [])?.code).toBeUndefined()
+    })
+
+    test('the lookup is only asked about allowed files', async () => {
+      const asked: string[] = []
+      const spy: CodeLookup = file => {
+        asked.push(file)
+        return LOOKUP(file)
+      }
+      parseV2(v2([choice({ at: { file: '../../etc/passwd', quote: 'root' } }), line({ at: { file: 'secret/other.ts' } }), choice(), explain()]), spy)
+      expect(asked).toEqual([])
+    })
+
+    test('a line question takes the hunk lines in file order, answer and why moved along', async () => {
+      const question = asLine(fourthOf(line()))
+      expect(question.options).toEqual(['const run = makeRunner()', "const args = ['--no-optional-locks', 'status']", 'return run(args, timeout)'])
+      expect(question.options[question.answer]).toBe("const args = ['--no-optional-locks', 'status']")
+      expect(question.why[question.answer]).toBe('Right: the flag is set here.')
+      expect(question.why[0]).toBe('Wrong: this only builds the runner.')
+      expect(question.lineNumbers).toEqual([10, 11, 13])
+      expect(question.code.focusLine).toBe(10)
+      expect(question.file).toBe('hooks/register.tsx')
+      expect(question.hint).toBe('Look for a flag.')
+      expect(isCodeDiff(question.code.diff)).toBe(true)
+    })
+
+    test('a line option is the diff text, never the model text', async () => {
+      const question = asLine(fourthOf(line({ options: ['  const   run = makeRunner()  ', 'const timeout = GIT_MS'], answer: 1, why: ['Wrong.', 'Right.'] })))
+      expect(question.options).toEqual(['const run = makeRunner()', 'const timeout = GIT_MS'])
+      expect(question.answer).toBe(1)
+      // A hint that quotes the answer line gives it away and is dropped.
+      expect(fourthOf(line({ hint: "It is const args = ['--no-optional-locks', 'status']" }))?.hint).toBeUndefined()
+    })
+
+    test('a broken line question is dropped whole', async () => {
+      const broken: readonly RawQuestion[] = [
+        line({ answer: 3 }),
+        line({ answer: -1 }),
+        line({ answer: 0.5 }),
+        line({ options: ['const run = makeRunner()'], why: ['x'] }),
+        line({ options: ['a', 'b', 'c', 'd', 'e'], why: ['1', '2', '3', '4', '5'] }),
+        line({ why: ['only one'] }),
+        line({ options: ['const run = makeRunner()', 'export const done = true', 'nowhere'] }),
+        line({ options: ['const run = makeRunner()', 'const  run = makeRunner()'], answer: 0, why: ['a', 'b'] }),
+        line({ at: { file: 'hooks/fileTree.ts' } }),
+        line({ at: { file: 'secret/other.ts' } }),
+        line({ at: undefined }),
+        line({ options: ['const run = makeRunner()', 'x'.repeat(CODE_LINE_MAX + 1)], answer: 0, why: ['a', 'b'] }),
+      ]
+      for (const question of broken) {
+        const outcome = parseV2(v2([explain(), explain(), explain(), question]))
+        expect(questionsOf(outcome)).toHaveLength(3)
+        expect(outcome.isValid && outcome.dropped).toBe(1)
+      }
+      // Each option is in the diff, but in two different hunks: there is no one card to draw.
+      const split: CodeLookup = () => parseHunks(`${HUNK}\n@@ -90,1 +92,1 @@\n-old tail\n+const tail = 1`)
+      expect(questionsOf(parseV2(v2([explain(), explain(), explain(), line({ options: ['const run = makeRunner()', 'const tail = 1'], why: ['a', 'b'] })]), split))).toHaveLength(3)
+      // With no hunks to resolve against, a line question cannot stand.
+      expect(questionsOf(parseV2(v2([explain(), explain(), explain(), line()]), () => []))).toHaveLength(3)
+    })
+
+    test('dropped line questions can leave too few', async () => {
+      const outcome = parseV2(v2([line(), line(), line({ answer: 9 }), choice()]), () => [])
+      expect(whyOf(outcome)).toBe('too-few')
+      expect(outcome.isValid ? -1 : outcome.dropped).toBe(3)
+    })
+
+    test('anchoredFiles lists allowed anchors once, capped, and nothing for v1', async () => {
+      const files = anchoredFiles(v2([
+        line(),
+        choice({ at: { file: 'hooks/register.tsx', quote: 'x' } }),
+        choice({ at: { file: 'secret/other.ts', quote: 'x' } }),
+        explain({ at: { file: 'hooks/fileTree.ts', quote: 'x' } }),
+        choice(),
+      ]), ALLOWED)
+      expect(files).toEqual(['hooks/register.tsx', 'hooks/fileTree.ts'])
+      const many = new Set(Array.from({ length: 8 }, (_, i) => `src/f${i}.ts`))
+      expect(anchoredFiles(v2([...many].map(file => choice({ at: { file, quote: 'x' } }))), many)).toHaveLength(5)
+      expect(anchoredFiles(reply([line()]), ALLOWED)).toEqual([])
+      expect(anchoredFiles('not json', ALLOWED)).toEqual([])
+    })
   })
 })

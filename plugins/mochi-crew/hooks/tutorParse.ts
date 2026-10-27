@@ -1,6 +1,8 @@
-import type { ChoiceQuestion, ExplainQuestion, TutorFailure, TutorQuestion, TutorTag } from '../types'
+import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorCode, TutorFailure, TutorQuestion, TutorTag } from '../types'
 import { safeText } from './fileTree'
 import { redactSecrets } from './redact'
+import { CODE_LINE_MAX, NO_CODE, lineCode, quoteCode } from './tutorCode'
+import type { CodeLookup } from './tutorCode'
 
 /** A reply longer than this is refused unread: a real round is a few thousand characters. */
 export const MAX_REPLY_CHARS = 20_000
@@ -33,6 +35,10 @@ export const MAX_OPTIONS = 4
 const MAX_NOTE = 200
 /** Every question tag, easiest first. */
 export const TUTOR_TAGS: readonly TutorTag[] = ['what', 'how', 'why', 'what-if']
+/** Reply schema versions the parser reads; v2 adds code anchors and line questions. */
+export const REPLY_VERSIONS: readonly number[] = [1, 2]
+/** Files a reply's code anchors may name; a fork round reads one local diff for at most these. */
+export const MAX_ANCHORED_FILES = 5
 /** The B.2 shape a question's `symbol` must have; anything else is dropped. */
 export const SYMBOL_SHAPE = /^[\w.$#:<>\-/ ]+$/
 
@@ -172,6 +178,34 @@ const optionalSymbol = (value: unknown): string | undefined => {
 
 type Base = Omit<ChoiceQuestion, 'kind' | 'options' | 'answer' | 'why'>
 
+/** What a question's `at` may resolve against: the round's files and, on a v2 reply, its hunks. */
+type Anchors = { readonly allowedFiles: ReadonlySet<string>; readonly lookup: CodeLookup; readonly isV2: boolean }
+
+/** The `at.file` of a v2 anchor when it names a file the round was given. */
+const anchorFile = (raw: JsonRecord, anchors: Anchors): string | undefined => {
+  if (!anchors.isV2 || !isRecord(raw.at)) return undefined
+  return optionalFile(raw.at.file, anchors.allowedFiles)
+}
+
+/**
+ * The code card a choice or explain question's `at` points at, or undefined. Any fault (no
+ * anchor, a file the round was not given, a quote that is too long or matches nothing) only
+ * costs the card: the question was fine without one.
+ */
+const anchorCode = (raw: JsonRecord, anchors: Anchors): TutorCode | undefined => {
+  const file = anchorFile(raw, anchors)
+  if (file === undefined || !isRecord(raw.at)) return undefined
+  const quote = boundedText(raw.at.quote, 1, CODE_LINE_MAX)
+  if (quote === null) return undefined
+  return quoteCode(file, anchors.lookup(file), quote) ?? undefined
+}
+
+/** A hunk line made fit for an option button, which Text draws: tabs expanded, ends trimmed. */
+const optionText = (line: string): string => safeText(line.replaceAll('\t', TAB_SPACES)).trim()
+
+/** Whether the hint names one of the options, which would give the question away. */
+const isGiveaway = (hint: string | undefined, option: string): boolean => hint !== undefined && normalized(hint).includes(normalized(option))
+
 const parseChoice = (raw: JsonRecord, base: Base): ChoiceQuestion | null => {
   const options = boundedList(raw.options, MIN_OPTIONS, MAX_OPTIONS, QUIZ_CAPS.option)
   if (options === null) return null
@@ -182,8 +216,7 @@ const parseChoice = (raw: JsonRecord, base: Base): ChoiceQuestion | null => {
   if (why === null) return null
   const { hint, ...rest } = base
   // A hint that names the right option gives the question away; the question itself is still good.
-  const isGiveaway = hint !== undefined && normalized(hint).includes(normalized(options[answer] ?? ''))
-  return { ...rest, ...(hint === undefined || isGiveaway ? {} : { hint }), kind: 'choice', options, answer, why }
+  return { ...rest, ...(hint === undefined || isGiveaway(hint, options[answer] ?? '') ? {} : { hint }), kind: 'choice', options, answer, why }
 }
 
 const parseExplain = (raw: JsonRecord, base: Base): ExplainQuestion | null => {
@@ -194,10 +227,45 @@ const parseExplain = (raw: JsonRecord, base: Base): ExplainQuestion | null => {
   return { ...base, kind: 'explain', reference, keyPoints }
 }
 
+/**
+ * A line question: its options must be distinct lines of one hunk of an allowed file, or it is
+ * dropped, as it means nothing without its card. The options become the hunk's own lines, in the
+ * order the hunk shows them, with `answer` and `why` moved along: the model's habit of putting
+ * the answer first is undone, and a replay keeps that order rather than shuffling it.
+ */
+const parseLine = (raw: JsonRecord, base: Base, anchors: Anchors): LineQuestion | null => {
+  const file = anchorFile(raw, anchors)
+  if (file === undefined) return null
+  const quoted = boundedList(raw.options, MIN_OPTIONS, MAX_OPTIONS, CODE_LINE_MAX)
+  if (quoted === null) return null
+  const answer = raw.answer
+  if (typeof answer !== 'number' || !Number.isInteger(answer) || answer < 0 || answer >= quoted.length) return null
+  const why = boundedList(raw.why, quoted.length, quoted.length, QUIZ_CAPS.why)
+  if (why === null) return null
+  const found = lineCode(file, anchors.lookup(file), quoted)
+  if (found === null) return null
+  const options = found.picks.map(pick => optionText(pick.text))
+  if (options.some(option => option === '') || new Set(options.map(normalized)).size !== options.length) return null
+  const picked = found.picks.findIndex(pick => pick.from === answer)
+  const { hint, ...rest } = base
+  return {
+    ...rest,
+    ...(hint === undefined || isGiveaway(hint, options[picked] ?? '') ? {} : { hint }),
+    file,
+    kind: 'line',
+    options,
+    answer: picked,
+    why: found.picks.map(pick => why[pick.from] ?? ''),
+    lineNumbers: found.picks.map(pick => pick.number),
+    code: found.code,
+  }
+}
+
 /** One question from the reply under the B.2 rules, or null when it breaks one that drops it. */
-const parseQuestion = (raw: unknown, id: string, allowedFiles: ReadonlySet<string>): TutorQuestion | null => {
+const parseQuestion = (raw: unknown, id: string, anchors: Anchors): TutorQuestion | null => {
   if (!isRecord(raw)) return null
-  if (raw.kind !== 'choice' && raw.kind !== 'explain') return null
+  const isKnown = raw.kind === 'choice' || raw.kind === 'explain' || (anchors.isV2 && raw.kind === 'line')
+  if (!isKnown) return null
   const topic = boundedText(raw.topic, 1, QUIZ_CAPS.topic)
   if (topic === null) return null
   const prompt = boundedText(raw.prompt, MIN_PROMPT, QUIZ_CAPS.prompt)
@@ -206,7 +274,7 @@ const parseQuestion = (raw: unknown, id: string, allowedFiles: ReadonlySet<strin
   if (hint === null) return null
   // An odd tag only changes a label, so it is coerced rather than costing the question.
   const tag: TutorTag = isTutorTag(raw.tag) ? raw.tag : 'how'
-  const file = optionalFile(raw.file, allowedFiles)
+  const file = optionalFile(raw.file, anchors.allowedFiles)
   const symbol = optionalSymbol(raw.symbol)
   const base: Base = {
     id,
@@ -217,7 +285,12 @@ const parseQuestion = (raw: unknown, id: string, allowedFiles: ReadonlySet<strin
     ...(file === undefined ? {} : { file }),
     ...(symbol === undefined ? {} : { symbol }),
   }
-  return raw.kind === 'choice' ? parseChoice(raw, base) : parseExplain(raw, base)
+  if (raw.kind === 'line') return parseLine(raw, base, anchors)
+  const parsed = raw.kind === 'choice' ? parseChoice(raw, base) : parseExplain(raw, base)
+  const code = parsed === null ? undefined : anchorCode(raw, anchors)
+  if (parsed === null || code === undefined) return parsed
+  // A card names its file, so the question's open action can follow it when the model left `file` out.
+  return { ...parsed, file: parsed.file ?? code.file, code }
 }
 
 /** mulberry32: a tiny seeded generator, so a round's shuffle can be replayed and tested. */
@@ -254,28 +327,64 @@ export const shuffleChoice = (question: ChoiceQuestion, seed: number): ChoiceQue
   }
 }
 
+/** The reply object with its questions, or why the text is not one. */
+const replyOf = (text: string): { readonly isRead: true; readonly v: number; readonly questions: readonly unknown[] } | { readonly isRead: false; readonly why: BadReplyWhy } => {
+  if (text.length > MAX_REPLY_CHARS) return { isRead: false, why: 'too-long' }
+  const json = extractJsonObject(text)
+  if (json === null) return { isRead: false, why: 'no-json' }
+  const parsed = parseJson(json)
+  if (!parsed.isParsed) return { isRead: false, why: 'bad-json' }
+  const reply = parsed.value
+  if (!isRecord(reply) || typeof reply.v !== 'number' || !REPLY_VERSIONS.includes(reply.v)) return { isRead: false, why: 'bad-version' }
+  if (!Array.isArray(reply.questions)) return { isRead: false, why: 'bad-shape' }
+  return { isRead: true, v: reply.v, questions: reply.questions }
+}
+
+/**
+ * The allowed files a v2 reply's examined questions anchor to, first named first, at most
+ * MAX_ANCHORED_FILES; empty for anything parseRound would refuse. A fork round reads its local
+ * diff for exactly these before parsing, so only files the round could draw are read.
+ */
+export const anchoredFiles = (text: string, allowedFiles: ReadonlySet<string>): readonly string[] => {
+  const reply = replyOf(text)
+  if (!reply.isRead || reply.v < 2) return []
+  const files = reply.questions.slice(0, MAX_EXAMINED).flatMap(raw => {
+    const at = isRecord(raw) ? raw.at : undefined
+    const file = isRecord(at) ? optionalFile(at.file, allowedFiles) : undefined
+    return file === undefined ? [] : [file]
+  })
+  return [...new Set(files)].slice(0, MAX_ANCHORED_FILES)
+}
+
 /**
  * A round from the model's reply (B.2). A broken question is dropped, not the round; the round
  * fails only on the reply-level reasons or with fewer than MIN_VALID valid questions. The first
  * MAX_EXAMINED questions are examined and at most `want` kept. Ids are `${roundId}:${i}` and
  * choice question `i` is shuffled with `seed * 31 + i`; pass the loading epoch as `seed`.
+ *
+ * A v2 reply's anchors are resolved through `lookup`, which hands back the hunks the round may
+ * draw for an allowed file; it is only asked about allowed files. An anchor that resolves to
+ * nothing drops a choice's or explain's card, and a line question whole. A v1 reply reads as it
+ * always did: `at` is ignored and a line question is an unknown kind.
  */
-export const parseRound = (text: string, roundId: string, allowedFiles: ReadonlySet<string>, want: number, seed: number): ParseOutcome => {
-  if (text.length > MAX_REPLY_CHARS) return { isValid: false, why: 'too-long' }
-  const json = extractJsonObject(text)
-  if (json === null) return { isValid: false, why: 'no-json' }
-  const parsed = parseJson(json)
-  if (!parsed.isParsed) return { isValid: false, why: 'bad-json' }
-  const reply = parsed.value
-  if (!isRecord(reply) || reply.v !== 1) return { isValid: false, why: 'bad-version' }
-  if (!Array.isArray(reply.questions)) return { isValid: false, why: 'bad-shape' }
+export const parseRound = (
+  text: string,
+  roundId: string,
+  allowedFiles: ReadonlySet<string>,
+  want: number,
+  seed: number,
+  lookup: CodeLookup = NO_CODE,
+): ParseOutcome => {
+  const reply = replyOf(text)
+  if (!reply.isRead) return { isValid: false, why: reply.why }
+  const anchors: Anchors = { allowedFiles, lookup, isV2: reply.v >= 2 }
 
   const questions: TutorQuestion[] = []
   let dropped = 0
   for (const raw of reply.questions.slice(0, MAX_EXAMINED)) {
     if (questions.length >= want) break
     const index = questions.length
-    const question = parseQuestion(raw, `${roundId}:${index}`, allowedFiles)
+    const question = parseQuestion(raw, `${roundId}:${index}`, anchors)
     if (question === null) {
       dropped += 1
       continue
