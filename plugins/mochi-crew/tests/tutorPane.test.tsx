@@ -78,6 +78,8 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
     gitCalls: [] as (readonly string[])[],
     reads: [] as string[],
     place: tab,
+    /** How long each git call takes, on the mocked clock. */
+    gitDelay: 0,
   }
   on('env.get', () => ({ value: undefined }))
   on('command.register', ($, e) => {
@@ -131,7 +133,8 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
     const text = files[landed]
     return { value: { kind: text === undefined ? 'dir' : 'file', size: text?.length ?? 0, mtimeMs: 0, isLink: target !== undefined, realPath: landed } as never }
   })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
+    if (record.gitDelay > 0 && clock !== undefined) await clock.sleep(record.gitDelay)
     const args = e.argv.slice(4)
     if (e.argv[0] === 'git') record.gitCalls.push(args)
     const verb = args[0] === 'diff' && args.includes('--numstat') ? 'numstat'
@@ -1424,6 +1427,102 @@ describe('tutor explain on mobile', () => {
     await shows(ui, 'Round done · 3/3')
     expect(record.completeRequests).toHaveLength(0)
     expect(record.modelCalls).toBe(1)
+    await ui.unmount()
+  })
+})
+
+describe('tutor races', () => {
+  test('a review asked for as a follow-up starts never strands the follow-up', async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck }, forks: [reply(quiz(5))], completes: [{ ...reply(ASK_REPLY, ASK_CALL), after: 5_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    const option = await ui.find({ type: 'Button', text: 'right answer' })
+    await ui.press({ key: option?.key ?? '' })
+    const asked = ui.input({ key: await fieldKey(ui), text: 'why?' })
+    const reviewed = $.command.run(mochi('tutor review'))
+    await clock.settle()
+    await clock.advance(5_000)
+    await asked
+    await reviewed
+    // The follow-up was asked and answered; the review waited its turn.
+    await lacks(ui, 'Mochi is thinking…')
+    await shows(ui, ASK_REPLY)
+    expect(record.completeRequests).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('a start and a review pressed together leave one round on screen', async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 5_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    const started = ui.press({ key: 'start:recent' })
+    const reviewed = ui.press({ key: 'review' })
+    await clock.settle()
+    await clock.advance(5_000)
+    await started
+    await reviewed
+    await lacks(ui, 'Mochi is reading')
+    expect((await ui.find({ type: 'Text', text: FIRST_STEM })) ?? (await ui.find({ type: 'Text', text: STEM }))).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a doubled Enter on an answer sends one grade and shows it', async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [{ ...grade([true, true]), after: 2_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await toExplain(ui)
+    const key = await fieldKey(ui)
+    const first = ui.input({ key, text: 'every section has its own cap' })
+    const second = ui.input({ key, text: 'every section has its own cap' })
+    await clock.settle()
+    await clock.advance(2_000)
+    await first
+    await second
+    expect(record.completeRequests).toHaveLength(1)
+    await shows(ui, GRADE_NOTE)
+    await lacks(ui, 'checking your answer…')
+    await ui.unmount()
+  })
+
+  test('x while a digest reads git sends no digest call', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, completes: [reply(quiz(5), DIGEST_CALL)], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    record.gitDelay = 1_000
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, 'Mochi is reading the diff…')
+    await ui.press({ key: 'cancel' })
+    await shows(ui, 'cancelled')
+    await clock.advance(5_000)
+    expect(record.completeRequests).toHaveLength(0)
+    await shows(ui, HOME)
+    await ui.unmount()
+  })
+
+  test('x while a fork round reads the log sends no fork', async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [reply(quiz(5))], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    record.gitDelay = 1_000
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, 'Mochi is reading the chat…')
+    await ui.press({ key: 'cancel' })
+    await clock.advance(5_000)
+    expect(record.forkPrompts).toHaveLength(0)
+    expect(record.modelCalls).toBe(0)
+    await shows(ui, HOME)
     await ui.unmount()
   })
 })
