@@ -313,6 +313,12 @@ describe('safe text', () => {
     expect(safeText('a\u001b]52;c;AAAA\u0007b')).toBe('a?]52;c;AAAA?b')
     expect(safeText('evil\u202egnp.js')).toBe('evil?gnp.js')
     expect(safeText('plain-name.ts')).toBe('plain-name.ts')
+    // Invisible characters that hide or smuggle text, each one `?`.
+    expect(safeText('a\u200bb\u200cc\u200dd\u200ee\u200ff')).toBe('a?b?c?d?e?f')
+    expect(safeText('\ufeffname\u061c.ts')).toBe('?name?.ts')
+    expect(safeText('ok\u{e0041}\u{e0042}\u{e007f}')).toBe('ok???')
+    // Just outside the ranges: kept.
+    expect(safeText('caf\u00e9 \u2010 \u{e0080} \u2030')).toBe('caf\u00e9 \u2010 \u{e0080} \u2030')
   })
 
   test('rows and the folded line show the safe form', async () => {
