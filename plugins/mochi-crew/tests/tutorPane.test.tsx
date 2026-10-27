@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Plugin, TestBody } from 'claude-code/testing'
 import { isCodeDiff } from '../hooks/tutorCode'
+import { parseProgress, projectOf } from '../hooks/tutorProgress'
 
 type $ = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -1996,4 +1997,212 @@ describe('tutor code cards', () => {
     for (const drawn of ['export const capped', 'API_KEY', 'export const two', '@@ -1,2 +1,5 @@', '<data kind="excerpt">']) expect(prompt).not.toContain(drawn)
     await ui.unmount()
   })
+})
+
+// ── flashcards ──
+
+const HARD_STEM = 'How does the tree stay quick on a large repo?'
+const MASTER_STEM = 'Why is the store keyed by project root?'
+const AHEAD_STEM = 'What does the spinner wait on?'
+/**
+ * Three cards four rounds in: one due in box 1 (oldest due, so first), one due in box 3 (a good
+ * retires it), and one in box 2 not due for a while (a good changes nothing).
+ */
+const flashStore = {
+  v: 1,
+  projects: {
+    '/repo': {
+      level: 1,
+      rounds: 4,
+      streak: 0,
+      deck: [
+        {
+          box: 3,
+          dueRound: 4,
+          question: {
+            id: 'r2-q1',
+            kind: 'choice',
+            tag: 'why',
+            topic: 'store keys',
+            prompt: MASTER_STEM,
+            options: ['Each project keeps its own deck', 'Keys must be short', 'The engine asks for it'],
+            answer: 0,
+            why: ['Decks do not mix.', 'Length is not it.', 'It does not.'],
+          },
+        },
+        {
+          box: 1,
+          dueRound: 3,
+          question: {
+            id: 'r1-q1',
+            kind: 'explain',
+            tag: 'how',
+            topic: 'tree reads',
+            prompt: HARD_STEM,
+            reference: 'It reads only the folders on the way to touched files.',
+            keyPoints: ['only touched paths', 'one read at a time'],
+          },
+        },
+        {
+          box: 2,
+          dueRound: 9,
+          question: {
+            id: 'r3-q2',
+            kind: 'choice',
+            tag: 'what',
+            topic: 'spinner',
+            prompt: AHEAD_STEM,
+            options: ['The call in flight', 'The clock', 'Nothing'],
+            answer: 0,
+            why: ['It stops when the call settles.', 'Not alone.', 'It waits on something.'],
+          },
+        },
+      ],
+      mastered: [],
+      recentMisses: [],
+      updatedAt: 1,
+    },
+  },
+}
+
+type SavedCard = { box: number; dueRound: number; question: { id: string } }
+/** The project as a fresh session would load it from what the store holds now. */
+const reloaded = (store: Map<string, unknown>) => projectOf(parseProgress(store.get('tutorProgress')), '/repo')
+const cardIn = (store: Map<string, unknown>, id: string): SavedCard | undefined =>
+  reloaded(store).deck.find(card => card.question.id === id)
+
+describe('tutor flashcards', () => {
+  for (const surface of [...SURFACES, 'mobile'] as const) {
+    test(`a full session rates every card, saves each rating and tallies it (${surface})`, async ($, on) => {
+      mock.clock(on)
+      const { record, store } = engine(on, { saved: { tutorConsent: 2, tutorProgress: flashStore } })
+      await start($)
+      const main = await $.ui.mount({ plugin: 'mochi-crew', surface, ...MAIN, props: paneProps('Mochi') })
+      const ui = await tutorTab($, surface)
+      expect(await ui.find({ type: 'Button', key: 'cards', text: 'cards (2 due)' })).toBeDefined()
+      await ui.press({ key: 'cards' })
+      await shows(ui, 'card 1/3')
+      await shows(ui, HARD_STEM)
+      await shows(main, 'flashcards · 1/3')
+      // Rating needs the answer seen first.
+      expect(await ui.find({ type: 'Button', key: 'rate:good' })).toBeUndefined()
+      await ui.press({ key: 'flip' })
+      await shows(ui, 'It reads only the folders on the way to touched files.')
+      await ui.press({ key: 'rate:hard' })
+      // Saved before the next card: quitting now would keep it.
+      expect(cardIn(store, 'r1-q1')).toEqual(expect.objectContaining({ box: 1, dueRound: 5 }))
+      await shows(ui, 'card 2/3')
+      await shows(ui, MASTER_STEM)
+      await shows(main, 'flashcards · 2/3')
+      await ui.press({ key: 'flip' })
+      await shows(ui, 'Each project keeps its own deck')
+      await ui.press({ key: 'rate:good' })
+      expect(cardIn(store, 'r2-q1')).toBeUndefined()
+      expect(reloaded(store).mastered).toEqual(['store keys'])
+      expect((store.get('stats') as { xp: number }).xp).toBe(1)
+      await shows(ui, AHEAD_STEM)
+      await ui.press({ key: 'flip' })
+      await shows(ui, 'not due yet: kept in box 2')
+      await ui.press({ key: 'rate:good' })
+      expect(cardIn(store, 'r3-q2')).toEqual(expect.objectContaining({ box: 2, dueRound: 9 }))
+      await shows(ui, 'Flashcards: 3 rated · 2 good · 1 hard · +1 XP · 1 now mastered')
+      await lacks(main, 'flashcards ·')
+      expect((store.get('stats') as { xp: number }).xp).toBe(1)
+      expect(await main.find({ type: 'Text', text: /2\/3 right\. Nice work\.|Round done: 2\/3\./ })).toBeDefined()
+      // Two cards are left, so another session can open; Home goes back.
+      await hasButton(ui, 'cards')
+      await ui.press({ key: 'home' })
+      await shows(ui, 'LV 1 · 4 rounds')
+      expect(record.modelCalls).toBe(0)
+      expect(await ui.find({ type: 'Input' })).toBeUndefined()
+      await main.unmount()
+      await ui.unmount()
+    })
+  }
+
+  test('ending after one rating keeps it, and ending before any goes Home', async ($, on) => {
+    mock.clock(on)
+    const { store } = engine(on, { saved: { tutorConsent: 2, tutorProgress: flashStore } })
+    await start($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'cards' })
+    await ui.press({ key: 'end' })
+    await shows(ui, 'LV 1 · 4 rounds')
+    await ui.press({ key: 'cards' })
+    await ui.press({ key: 'flip' })
+    await ui.press({ key: 'rate:again' })
+    await ui.press({ key: 'end' })
+    await shows(ui, 'Flashcards: 1 rated · 1 again · +0 XP')
+    expect(cardIn(store, 'r1-q1')).toEqual(expect.objectContaining({ box: 1, dueRound: 5 }))
+    expect(store.get('stats')).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a doubled rating rates one card once', async ($, on) => {
+    mock.clock(on)
+    const { store } = engine(on, { saved: { tutorConsent: 2, tutorProgress: flashStore } })
+    await start($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'cards' })
+    await ui.press({ key: 'flip' })
+    // Both presses land on the first card's back; only one may move the session on.
+    await Promise.all([ui.press({ key: 'rate:good' }), ui.press({ key: 'rate:good' })])
+    await shows(ui, 'card 2/3')
+    await shows(ui, MASTER_STEM)
+    expect(cardIn(store, 'r1-q1')).toEqual(expect.objectContaining({ box: 2 }))
+    expect(cardIn(store, 'r2-q1')).toEqual(expect.objectContaining({ box: 3, dueRound: 4 }))
+    expect((store.get('stats') as { xp: number }).xp).toBe(1)
+    await ui.unmount()
+  })
+
+  test('flashcard XP stops at the conversation cap', async ($, on) => {
+    mock.clock(on)
+    // Twelve due box-1 cards: two sessions could earn 12, the cap allows 10.
+    const project = flashStore.projects['/repo']
+    const deck = Array.from({ length: 12 }, (_, i) => ({ box: 1, dueRound: 1, question: { ...project.deck[0]?.question, id: `r1-q${i}`, topic: `topic ${i}` } }))
+    const { store } = engine(on, { saved: { tutorConsent: 2, tutorProgress: { v: 1, projects: { '/repo': { ...project, deck } } } } })
+    await start($)
+    const ui = await tutorTab($)
+    for (const expected of ['+10 XP', '+0 XP']) {
+      await ui.press({ key: 'cards' })
+      for (let step = 0; step < 10; step++) {
+        if (await ui.find({ type: 'Text', text: 'Flashcards:' })) break
+        await ui.press({ key: 'flip' })
+        await ui.press({ key: 'rate:good' })
+      }
+      await shows(ui, expected)
+      await ui.press({ key: 'home' })
+    }
+    expect((store.get('stats') as { xp: number }).xp).toBe(10)
+    await ui.unmount()
+  })
+
+  for (const surface of SURFACES) {
+    test(`k keeps the question for flashcards, hides, and survives the round's end (${surface})`, async ($, on) => {
+      mock.clock(on)
+      const { record, store } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))] })
+      await start($)
+      await warmUp($)
+      const ui = await tutorTab($, surface)
+      await ui.press({ key: 'start:recent' })
+      await shows(ui, FIRST_STEM)
+      expect(await ui.find({ type: 'Button', key: 'keep' })).toBeUndefined()
+      await ui.press({ key: (await ui.find({ type: 'Button', text: 'right answer' }))?.key ?? '' })
+      await hasButton(ui, 'keep')
+      await ui.press({ key: 'keep' })
+      expect(record.toasts).toContain('Kept for flashcards.')
+      expect(await ui.find({ type: 'Button', key: 'keep' })).toBeUndefined()
+      expect(reloaded(store).deck.map(card => card.question.topic)).toEqual(['topic 0'])
+      // A second press on a kept card says nothing more.
+      await ui.press({ key: 'keep' }).catch(() => undefined)
+      expect(record.toasts.filter(text => text === 'Kept for flashcards.')).toHaveLength(1)
+      await ui.press({ key: 'next' })
+      // Steps count from the second question here, so the miss is on the third.
+      await answerAll(ui, 1)
+      await shows(ui, 'Round done · 4/5')
+      expect(reloaded(store).deck.map(card => card.question.topic).sort()).toEqual(['topic 0', 'topic 2'])
+      await hasButton(ui, 'cards')
+      await ui.unmount()
+    })
+  }
 })

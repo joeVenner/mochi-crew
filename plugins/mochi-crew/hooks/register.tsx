@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HookFailure, ModelCompleteRequest, ModelCompleteResult, ModelForkResult, ModelUsage, Register, RenderSurface, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput, UiPane } from 'claude-code'
 
-import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, TutorFailure, TutorFocus, TutorProject, TutorQuestion, TutorRound, TutorSession, TutorState, TutorUsage, Worker } from '../types'
+import type { Bug, CacheTotals, Care, CrewStats, FlashRating, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, TutorFailure, TutorFocus, TutorProject, TutorQuestion, TutorRound, TutorSession, TutorState, TutorUsage, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
 import { placeFor } from './badgePalette'
@@ -41,9 +41,10 @@ import { anchoredFiles, cleanModelText, parseGrade, parseRound } from './tutorPa
 import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
 import { DEFAULT_TUTOR_CONFIG, afterDigest, afterFork, choosePlan, isForkMiss, parseTutorConfig, planLabel, wasForkMiss } from './tutorPlan'
 import { askRequest, digestRequest, forkPrompt, gradeRequest } from './tutorPrompt'
+import { FLASH_REPLIES, flashCurrent, flashDeck, flashXpLeft, flashXpOf, goodStreak, isCardDue, keepCard, rateCard } from './tutorCards'
 import { FRESH_PROJECT, afterRound, dueCards, parseProgress, projectOf, withProject } from './tutorProgress'
 import type { TutorEvent } from './tutorRound'
-import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview, tutorStartRefusal, verdictOf } from './tutorRound'
+import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, flashOpenRefusal, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview, tutorStartRefusal, verdictOf } from './tutorRound'
 import type { TutorAction, TutorControl, TutorFrameTone, TutorInputRow, TutorRow, TutorTone, TutorViewContext } from './tutorView'
 import { isListedControl, tutorHudLabel, tutorScreen } from './tutorView'
 import type { ProviderEnv, TtlEnv } from './meter'
@@ -1093,6 +1094,11 @@ const TUTOR_MESSAGES = 200
 const TUTOR_NEW_FILES = 2
 const TUTOR_NEW_FILE_LINES = 60
 
+// Where a session opened straight from a closed tab returns: the Home a bare open shows.
+const HOME_TUTOR_FOCUS: TutorFocus = 'recent'
+// Good ratings in a row that earn Mochi's "right" line again (A.6).
+const FLASH_STREAK = 3
+const TUTOR_KEPT = 'Kept for flashcards.'
 const TUTOR_CLOSED: TutorState = { phase: 'closed' }
 const NO_TUTOR_PROJECT: TutorProject | null = null
 const FRESH_TUTOR_SESSION: TutorSession = { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false, flashXp: 0 }
@@ -1850,6 +1856,107 @@ const openTutorFile = async ($: EngineInterface): Promise<void> => {
   $.ui.toast(await openInEditor($, undefined, file, tutorViewport.surface))
 }
 
+/** What asking for flashcards came to: a session on screen, nothing in the deck, or a toast saying why not. */
+type CardsOutcome = 'opened' | 'empty' | 'refused'
+
+/**
+ * `c` and `/mascot tutor cards` (A.2): a session over the deck, opened from Home, the summary,
+ * an error or a finished session. Nothing is sent, so no consent is asked; a call or a round
+ * on screen is not cut short, and is decided inside the update so a doubled press opens one.
+ */
+const openCards = async ($: EngineInterface): Promise<CardsOutcome> => {
+  await loadTutor($)
+  const ids = flashDeck((await read($, tutorProject)) ?? FRESH_PROJECT).map(card => card.question.id)
+  if (ids.length === 0) return 'empty'
+  const xpLeft = flashXpLeft(await read($, tutorSession))
+  const at = await $.clock.now()
+  let refusal: string | undefined
+  const shown = await update($, tutor, current => {
+    refusal = flashOpenRefusal(current)
+    if (refusal !== undefined) return current
+    const focus = current.phase === 'closed' || current.phase === 'consent' ? HOME_TUTOR_FOCUS : focusOf(current)
+    return applyTutor(current, { kind: 'cards-open', ids, at, focus, xpLeft })
+  })
+  if (refusal !== undefined) {
+    $.ui.toast(refusal)
+    return 'refused'
+  }
+  if (shown.phase !== 'cards') return 'refused'
+  $.ui.invalidate('ui.render')
+  await focusTutor($, shown)
+  return 'opened'
+}
+
+/** Mochi's line when a session ends: the good ratings out of all, as a round's score reads. */
+const sayCardsDone = async ($: EngineInterface, state: TutorState): Promise<void> => {
+  if (state.phase !== 'cards-done') return
+  const good = state.flash.ratings.filter(rated => rated.rating === 'good').length
+  await say($, 'tutor-done', `${good}/${state.flash.ratings.length}`)
+}
+
+/**
+ * `1`/`2`/`3` on a card's back (A.5, A.6): the screen moves on first, inside its update, so a
+ * doubled press rates once; then the card is rescheduled on the live project and saved at once,
+ * so quitting mid-session keeps every rating. XP is what the session earned past its last
+ * rating, within the conversation's cap.
+ */
+const rateFlash = async ($: EngineInterface, rating: FlashRating): Promise<void> => {
+  const state = await read($, tutor)
+  if (state.phase !== 'cards' || !state.flash.isFlipped) return
+  const project = (await read($, tutorProject)) ?? FRESH_PROJECT
+  const current = flashCurrent(state.flash, project.deck)
+  if (current === null) return
+  const { card } = current
+  const wasDue = isCardDue(project, card)
+  const { before, after } = await changeTutor($, { kind: 'rate', id: card.question.id, rating, wasDue })
+  if (after === before || before.phase !== 'cards' || (after.phase !== 'cards' && after.phase !== 'cards-done')) return
+  const now = await $.clock.now()
+  const rated = await update($, tutorProject, (held): TutorProject | null => rateCard(held ?? FRESH_PROJECT, card.question.id, rating, now))
+  $.ui.invalidate('ui.render')
+  await focusTutor($, after)
+  // A failed write is logged by persist; the session goes on.
+  if (rated !== null) await saveTutorProject($, rated)
+  const xp = flashXpOf(after.flash) - flashXpOf(before.flash)
+  if (xp > 0) {
+    await update($, tutorSession, (session): TutorSession => ({ ...session, flashXp: session.flashXp + xp }))
+    await saveStats($, score => ({ ...score, xp: score.xp + xp }))
+  }
+  if (after.phase === 'cards-done') return sayCardsDone($, after)
+  if (rating === 'good' && goodStreak(after.flash) === FLASH_STREAK) await say($, 'tutor-right', '')
+}
+
+/** `x` on a card: the tally of what was rated, or Home when nothing was. */
+const endCards = async ($: EngineInterface): Promise<void> => {
+  const { before, after } = await changeTutor($, { kind: 'cards-end' })
+  if (after === before) return
+  await focusTutor($, after)
+  await sayCardsDone($, after)
+}
+
+/**
+ * `k` on feedback (A.7): the question into the deck for flashcards, on the live project, so the
+ * round's end (which reads the project then) keeps it. A replayed card, or one the deck already
+ * holds, changes nothing and says nothing.
+ */
+const keepTutorCard = async ($: EngineInterface): Promise<void> => {
+  const state = await read($, tutor)
+  if (state.phase !== 'feedback') return
+  const question = currentQuestion(state.round)
+  if (question === undefined) return
+  const now = await $.clock.now()
+  let isKept = false
+  const project = await update($, tutorProject, (held): TutorProject | null => {
+    const before = held ?? FRESH_PROJECT
+    const after = keepCard(before, question, now)
+    isKept = after !== before
+    return isKept ? after : held
+  })
+  if (!isKept || project === null) return
+  $.ui.invalidate('ui.render')
+  await saveTutorProject($, project)
+  $.ui.toast(TUTOR_KEPT)
+}
+
 /** A screen waiting on one grade or follow-up call. */
 type TutorWait = Extract<TutorState, { phase: 'grading' | 'asking' }>
 
@@ -2022,6 +2129,27 @@ const pressTutor = async ($: EngineInterface, action: TutorAction): Promise<void
         return await retryMissed($)
       case 'open-file':
         return await openTutorFile($)
+      case 'keep':
+        return await keepTutorCard($)
+      case 'cards': {
+        if ((await openCards($)) === 'empty') $.ui.toast(FLASH_REPLIES.empty)
+        return
+      }
+      case 'flip':
+        await dispatchTutor($, { kind: 'flip' })
+        return
+      case 'rate':
+        return await rateFlash($, action.rating)
+      case 'cards-end':
+        return await endCards($)
+      case 'home':
+        await dispatchTutor($, { kind: 'cancel' })
+        return
+      default: {
+        // A control the view draws but nothing here runs fails to type-check instead of doing nothing.
+        const unhandled: never = action
+        return unhandled
+      }
     }
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: tutor control ${action.kind} failed: ${String(error)}`, { to: 'debug' })
