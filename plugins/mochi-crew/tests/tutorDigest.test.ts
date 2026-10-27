@@ -7,6 +7,8 @@ import {
   buildDigest,
   capHunks,
   diffArgs,
+  MAX_NEW_FILE_BYTES,
+  isReadableNewFile,
   isSecretPath,
   layoutSummary,
   logArgs,
@@ -154,6 +156,30 @@ describe('tutorDigest', () => {
     for (const path of ['config.json', 'src/config.ts', 'app/settings.py', 'docker-compose.yml', 'kube/config.ts', 'docker/config.json', 'database.yml', 'db/database.yml', 'src/application.ts', 'tutorial.md']) {
       expect(isSecretPath(path)).toBe(false)
     }
+  })
+
+  test('isReadableNewFile takes a small regular file inside the real root', async () => {
+    const file = { kind: 'file', size: 120, isLink: false, realPath: '/real/repo/src/notes.ts' } as const
+    expect(isReadableNewFile(file, '/real/repo')).toBe(true)
+    expect(isReadableNewFile({ ...file, size: MAX_NEW_FILE_BYTES }, '/real/repo')).toBe(true)
+  })
+
+  test('isReadableNewFile refuses links, folders, large files and files without a real path', async () => {
+    const file = { kind: 'file', size: 120, isLink: false, realPath: '/real/repo/src/notes.ts' } as const
+    expect(isReadableNewFile({ ...file, isLink: true }, '/real/repo')).toBe(false)
+    expect(isReadableNewFile({ ...file, kind: 'dir' }, '/real/repo')).toBe(false)
+    expect(isReadableNewFile({ ...file, kind: 'other' }, '/real/repo')).toBe(false)
+    expect(isReadableNewFile({ ...file, size: MAX_NEW_FILE_BYTES + 1 }, '/real/repo')).toBe(false)
+    expect(isReadableNewFile({ kind: 'file', size: 1, isLink: false }, '/real/repo')).toBe(false)
+  })
+
+  test('isReadableNewFile refuses a file landing outside the root or on a secret name', async () => {
+    const file = { kind: 'file', size: 120, isLink: false } as const
+    // Reached through a linked folder: the path is not itself a link, but it lands elsewhere.
+    expect(isReadableNewFile({ ...file, realPath: '/home/u/.ssh/id_rsa' }, '/real/repo')).toBe(false)
+    expect(isReadableNewFile({ ...file, realPath: '/real/repo-other/a.ts' }, '/real/repo')).toBe(false)
+    expect(isReadableNewFile({ ...file, realPath: '/real/repo/config/.env.local' }, '/real/repo')).toBe(false)
+    expect(isReadableNewFile({ ...file, realPath: '/real/repo' }, '/real/repo')).toBe(false)
   })
 
   test('the diff runs in two steps: a repository-wide name list, then literal allowed paths', async () => {

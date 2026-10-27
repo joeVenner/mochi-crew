@@ -33,7 +33,7 @@ import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit,
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
 import type { Digest, TranscriptRow } from './tutorDigest'
-import { buildDigest, diffArgs, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
+import { buildDigest, diffArgs, isReadableNewFile, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
 import type { ParseOutcome } from './tutorParse'
 import { cleanModelText, parseGrade, parseRound } from './tutorParse'
 import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
@@ -1369,13 +1369,22 @@ const readTranscript = async ($: EngineInterface, root: string): Promise<readonl
   }
 }
 
-/** The first lines of up to two new (untracked) files this session touched, never a secret-looking one. */
+/**
+ * The first lines of up to two new (untracked) files this session touched, never a
+ * secret-looking one, a link, a large file or one that lands outside the project.
+ */
 const readNewFiles = async ($: EngineInterface, root: string, touched: readonly TouchedFile[], snapshot: TreeSnapshot | null): Promise<readonly { readonly path: string; readonly text: string }[]> => {
   const marks = snapshot?.marks ?? {}
   const paths = ownTouched(touched).filter(path => marks[path] === '?' && !isSecretPath(path)).slice(0, TUTOR_NEW_FILES)
+  if (paths.length === 0) return []
+  const rootReal = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath
+  if (rootReal === undefined) return []
   const read = await Promise.all(paths.map(async path => {
     try {
-      const text = await $.fs.read(`${root}/${path}`)
+      const stat = await $.fs.stat(`${root}/${path}`, { resolve: true })
+      if (!isReadableNewFile(stat, rootReal) || stat.realPath === undefined) return []
+      // Read where it landed, not by the spelling that was checked.
+      const text = await $.fs.read(stat.realPath)
       return [{ path, text: text.split('\n').slice(0, TUTOR_NEW_FILE_LINES).join('\n') }]
     } catch (error: unknown) {
       $.ui.log(`mochi-crew: tutor could not read a new file: ${String(error)}`, { to: 'debug' })

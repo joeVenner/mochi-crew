@@ -41,6 +41,8 @@ type EngineOptions = {
   messages?: readonly Message[]
   /** Files on disk by absolute path; any other read fails as missing. */
   files?: Readonly<Record<string, string>>
+  /** Symbolic links by absolute path, each to where it lands. */
+  links?: Readonly<Record<string, string>>
   /** Each call takes the next answer; the last one repeats. */
   forks?: readonly Planned<ForkAnswer>[]
   completes?: readonly Planned<ModelAnswer>[]
@@ -60,7 +62,7 @@ const DIGEST_CALL: Usage = { input_tokens: 9_000, output_tokens: 800, cache_read
  * store backed by a Map, git and the models as each test plans them, and records of every
  * open, close, toast, save, git argv and model request.
  */
-const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true }, git = {}, messages = [], files = {}, forks, completes, isCompleteRefused = false, clock }: EngineOptions = {}) => {
+const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true }, git = {}, messages = [], files = {}, links = {}, forks, completes, isCompleteRefused = false, clock }: EngineOptions = {}) => {
   const store = new Map<string, unknown>(Object.entries(saved))
   const record = {
     commands: [] as string[],
@@ -120,7 +122,12 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
     return { value: text as never }
   })
   on('fs.list', () => ({ value: [] }))
-  on('fs.stat', ($, e) => ({ value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: false, realPath: e.path } as never }))
+  on('fs.stat', ($, e) => {
+    const target = links[e.path]
+    const landed = target ?? e.path
+    const text = files[landed]
+    return { value: { kind: text === undefined ? 'dir' : 'file', size: text?.length ?? 0, mtimeMs: 0, isLink: target !== undefined, realPath: landed } as never }
+  })
   on('process.run', ($, e) => {
     const args = e.argv.slice(4)
     if (e.argv[0] === 'git') record.gitCalls.push(args)
@@ -869,6 +876,40 @@ describe('tutor rounds', () => {
     expect(prompt).toContain('EXTRA_MARKER')
     expect(prompt).not.toContain('NOTE_MARKER')
     expect(prompt).not.toContain('env-file-content')
+    await ui.unmount()
+  })
+
+  test('the digest never reads a new file that is a link, lands outside the project or is large', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, {
+      saved: { tutorConsent: 1 },
+      git: {
+        log: COMMITS,
+        'rev-parse': '\n',
+        branch: 'main\n',
+        worktree: 'worktree /repo\0HEAD 1\0branch refs/heads/main\0\0',
+        status: '?? notes.ts\0?? big.ts\0',
+      },
+      files: {
+        '/home/u/.ssh/id_rsa': 'LINKED_KEY_CONTENT\n',
+        '/repo/big.ts': `export const BIG_MARKER = 1\n${'x'.repeat(200_001)}`,
+      },
+      links: { '/repo/notes.ts': '/home/u/.ssh/id_rsa' },
+      completes: [reply(quiz(5), DIGEST_CALL)],
+    })
+    on('tool.call', { tool: 'Write' }, () => ({ result: {} as never, text: 'written' }))
+    await start($)
+    await warmUp($)
+    for (const file of ['notes.ts', 'big.ts']) await $.tool.call({ tool: 'Write', file_path: `/repo/${file}`, content: 'x' })
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    const prompt = record.completeRequests[0]?.prompt ?? ''
+    expect(record.reads).not.toContain('/home/u/.ssh/id_rsa')
+    expect(record.reads).not.toContain('/repo/notes.ts')
+    expect(record.reads).not.toContain('/repo/big.ts')
+    expect(prompt).not.toContain('LINKED_KEY_CONTENT')
+    expect(prompt).not.toContain('BIG_MARKER')
     await ui.unmount()
   })
 

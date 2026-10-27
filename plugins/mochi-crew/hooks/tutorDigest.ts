@@ -1,5 +1,5 @@
 import type { TouchedFile, TutorFocus } from '../types'
-import { relativeTo, safeText } from './fileTree'
+import { isInside, relativeTo, safeText } from './fileTree'
 import { REDACT_LIMIT, redactSecrets } from './redact'
 
 /** The whole digest a digest round sends, at most; every section fits inside it. */
@@ -94,6 +94,24 @@ export const isSecretPath = (path: string): boolean => {
   return segments.some(isSecretName)
     || folders.some(folder => SKIPPED_FOLDERS.has(folder) || SECRET_FOLDERS.has(folder))
     || SECRET_TAILS.some(([folder, file]) => parent === folder && name === file)
+}
+
+/** A new file larger than this is not read for the digest at all: only its first lines would be shown. */
+export const MAX_NEW_FILE_BYTES = 200_000
+
+/** What `$.fs.stat` with `resolve` says of a new file, as far as the read check needs it. */
+export type NewFileStat = { readonly kind: 'file' | 'dir' | 'other'; readonly size: number; readonly isLink: boolean; readonly realPath?: string }
+
+/**
+ * Whether a new file may be read for the digest: a regular file, not itself a link, small, and
+ * landing inside the real root under a name that is not secret-shaped. A link named `notes.md`
+ * pointing at `~/.ssh/id_rsa`, or one through a linked folder, is refused by where it lands.
+ */
+export const isReadableNewFile = (stat: NewFileStat, rootReal: string): boolean => {
+  if (stat.kind !== 'file' || stat.isLink || stat.size > MAX_NEW_FILE_BYTES || stat.realPath === undefined) return false
+  if (!isInside(rootReal, stat.realPath)) return false
+  const relative = relativeTo(rootReal, stat.realPath)
+  return relative !== undefined && relative !== '' && !isSecretPath(relative)
 }
 
 const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----/g
