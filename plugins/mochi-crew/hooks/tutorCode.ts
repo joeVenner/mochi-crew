@@ -175,13 +175,21 @@ export const quoteCode = (file: string, hunks: readonly Hunk[], quote: string): 
   return diff === null ? null : { file, diff, focusLine: match.number }
 }
 
-/** A line question's card: one window holding every option's line, and each option's shown number. */
-export type LineCode = { readonly code: TutorCode; readonly lineNumbers: readonly number[] }
+/** One option of a line question as its hunk holds it: where the option was, its line's text, its shown number. */
+export type LinePick = { readonly from: number; readonly text: string; readonly number: number }
+
+/**
+ * A line question's card: one window holding every option's line, and each option's line in the
+ * order the hunk shows them, so the card and the buttons read top to bottom alike.
+ */
+export type LineCode = { readonly code: TutorCode; readonly lineNumbers: readonly number[]; readonly picks: readonly LinePick[] }
 
 /**
  * The card for a line question: the first hunk that holds every option as a distinct line, cut
- * to a window holding them all. Null when no hunk does or the lines span too far. `focusLine` is
- * the first option line in file order, so opening the file there gives no answer away.
+ * to a window holding them all. Null when no hunk does or the lines span too far. `lineNumbers`
+ * follows the options' order and `picks` the hunk's; each pick's text is the hunk's own line,
+ * marker dropped and cut as `codeLine` cuts it, so what is drawn never comes from the model.
+ * `focusLine` is the first option line in file order, so opening the file there gives no answer away.
  */
 export const lineCode = (file: string, hunks: readonly Hunk[], options: readonly string[]): LineCode | null => {
   for (const hunk of hunks) {
@@ -192,7 +200,11 @@ export const lineCode = (file: string, hunks: readonly Hunk[], options: readonly
     const diff = codeWindow(hunk, indices)
     if (diff === null) continue
     const lineNumbers = matches.map(match => match.number)
-    return { code: { file, diff, focusLine: Math.min(...lineNumbers) }, lineNumbers }
+    const picks = matches
+      .map((match, from) => ({ from, at: match.line, text: codeLine(hunk.lines[match.line]?.text ?? ''), number: match.number }))
+      .sort((a, b) => a.at - b.at)
+      .map(({ from, text, number }) => ({ from, text, number }))
+    return { code: { file, diff, focusLine: Math.min(...lineNumbers) }, lineNumbers, picks }
   }
   return null
 }

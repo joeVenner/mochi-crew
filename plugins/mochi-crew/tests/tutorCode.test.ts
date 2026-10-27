@@ -166,6 +166,12 @@ describe('tutor code', () => {
     const found = lineCode('src/a.ts', hunks, ['const fresh = 2', 'const old = 2', 'const tail = 4'])
     expect(found?.lineNumbers).toEqual([11, 11, 13])
     expect(found?.code.focusLine).toBe(11)
+    // Picks follow the hunk, each carrying where its option was and the hunk's own text.
+    expect(found?.picks).toEqual([
+      { from: 1, text: 'const old = 2', number: 11 },
+      { from: 0, text: 'const fresh = 2', number: 11 },
+      { from: 2, text: 'const tail = 4', number: 13 },
+    ])
     expect(codeNumbers(found?.code.diff ?? '')).toEqual([10, 11, 11, 12, 13, 14])
     // The second hunk holds both: the first hunk's `const keep` copy is not enough on its own.
     expect(lineCode('src/a.ts', hunks, ['const keep = 1', 'return fresh'])?.lineNumbers).toEqual([41, 42])
