@@ -192,7 +192,7 @@ describe('tutorDigest', () => {
   })
 
   test('the diff runs in two steps: a repository-wide name list, then literal allowed paths', async () => {
-    expect(nameStatusArgs()).toEqual(['diff', '--name-status', '-z', '-M', '-C', '--no-relative', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ':/'])
+    expect(nameStatusArgs()).toEqual(['diff', '--name-status', '-z', '-M', '-C', '-l0', '--no-relative', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ':/'])
     const scope = ['--no-renames', '--relative', 'HEAD', '--', ':(literal)src/a b.ts', ':(literal)*:odd']
     expect(diffArgs(['src/a b.ts', '*:odd'])).toEqual(['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', '-U2', ...scope])
     expect(numstatArgs(['src/a b.ts', '*:odd'])).toEqual(['diff', '--numstat', '--no-color', '--no-ext-diff', '--no-textconv', ...scope])

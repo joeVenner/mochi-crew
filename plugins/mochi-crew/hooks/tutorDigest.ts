@@ -183,9 +183,11 @@ export const MAX_DIFF_PATHS = 150
  * `git diff --name-status -z` of the whole repository against HEAD, renames and copies found.
  * Repository-wide and without `--relative` on purpose: a pathspec or `--relative` limits the
  * files before rename detection, so `git mv ../.env config.txt` would show only as a new
- * `config.txt` and its secret would pass. NUL-separated, so no name needs unquoting.
+ * `config.txt` and its secret would pass. `-l0` lifts `diff.renameLimit`: past it git skips
+ * inexact renames, and an edited, moved `.env` would show as a delete and a new file. NUL-separated,
+ * so no name needs unquoting.
  */
-export const nameStatusArgs = (): readonly string[] => ['diff', '--name-status', '-z', '-M', '-C', '--no-relative', ...DIFF_FLAGS, 'HEAD', '--', ':/']
+export const nameStatusArgs = (): readonly string[] => ['diff', '--name-status', '-z', '-M', '-C', '-l0', '--no-relative', ...DIFF_FLAGS, 'HEAD', '--', ':/']
 
 // `literal` so a name holding `*` or `:` matches only itself.
 const literalSpecs = (paths: readonly string[]): readonly string[] => paths.map(path => `:(literal)${path}`)
