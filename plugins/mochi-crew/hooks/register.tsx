@@ -32,6 +32,8 @@ import { DONE_MS, SCENE_ROWS, cellsFor } from './sprite'
 import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit, noteGreenTests, settleTurn } from './progress'
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
+import type { TutorConfig } from './tutorPlan'
+import { DEFAULT_TUTOR_CONFIG, parseTutorConfig } from './tutorPlan'
 import type { ProviderEnv, TtlEnv } from './meter'
 import { EMPTY_CACHE, addUsage, certainlyColdAfterMs, describeFailure, detectProvider, isCacheUnreported, isCertainlyCold, settleProvider } from './meter'
 import type { Alert } from './meterAlerts'
@@ -1029,6 +1031,10 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
 const TUTOR_PANE = 'mochi-tutor'
 const TUTOR_TITLE = 'Tutor'
 
+// The `/config` pickers, read once per load: a change there reloads the module, which drops a
+// round in flight along with every other module variable.
+let tutorConfig: TutorConfig = DEFAULT_TUTOR_CONFIG
+
 /**
  * Answers `/mascot tutor [action]` with neutral text only: the line lands in the transcript, so
  * no question or model text ever goes in it.
@@ -1388,7 +1394,8 @@ const openInEditor = async ($: EngineInterface, worktree: string | undefined, pa
   return `Could not open ${shown}: no editor found (set VISUAL to code, cursor or zed).`
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  tutorConfig = parseTutorConfig(options)
   on('session.end', async ($, e, next) => {
     // Every ending closes this conversation's figures, a /clear and a resume included.
     await resetConversation($)

@@ -7,5 +7,9 @@
   "repository": "https://github.com/joeVenner/mochi-crew",
   "license": "MIT",
   "keywords": ["companion", "pixel-art", "pet", "gamification", "hud", "mod", "context", "prompt-cache", "usage", "file-tree", "session-badge", "terminal", "places"],
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "tutorModel": { "type": "string", "title": "Tutor model", "description": "Model for quiz digests, grading and follow-ups. Rounds from a warm chat use the session's own model.", "default": "haiku", "options": ["haiku", "sonnet", "opus"] },
+    "tutorContext": { "type": "string", "title": "Tutor context", "description": "auto: reuse the chat when its cache may be warm, else a capped digest. digest: always the digest. session: always reuse the chat.", "default": "auto", "options": ["auto", "digest", "session"] }
+  }
 }
