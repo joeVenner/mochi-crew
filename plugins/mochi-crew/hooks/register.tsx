@@ -34,6 +34,7 @@ import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touc
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
 import type { Digest, TranscriptRow } from './tutorDigest'
 import { buildDigest, capGitOutput, diffArgs, isReadableNewFile, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
+import { excerptLookup, ownExcerpt } from './tutorCode'
 import type { ParseOutcome } from './tutorParse'
 import { cleanModelText, parseGrade, parseRound } from './tutorParse'
 import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
@@ -1619,7 +1620,8 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder, hold: Round
   spent = addTutorUsage(spent, called.result.usage)
   const next = afterDigest(called.result)
   if (next.kind === 'error') return fail(next.failure, false)
-  const parsed = parseRound(next.text, roundId(), new Set(digest.files), ctx.count, hold.epoch)
+  // Cards draw only what this digest sent, masked; the model's quotes just point into it.
+  const parsed = parseRound(next.text, roundId(), new Set(digest.files), ctx.count, hold.epoch, excerptLookup(digest.excerpts))
   if (!parsed.isValid) {
     logInvalid($, parsed)
     return fail({ kind: 'bad-reply', why: parsed.why }, false)
@@ -1896,7 +1898,7 @@ const submitAnswer = async ($: EngineInterface, text: string): Promise<void> => 
 
 /** The diff excerpt a digest kept for `file`: own keys only, so a file named like an Object method reads nothing. */
 const excerptFor = (digest: Digest | null, file: string | undefined): string | undefined =>
-  digest !== null && file !== undefined && Object.hasOwn(digest.excerpts, file) ? digest.excerpts[file] : undefined
+  digest === null || file === undefined ? undefined : ownExcerpt(digest.excerpts, file)
 
 /**
  * Enter on the feedback's ask field (B.6): one capped completion on the tutor model, never a

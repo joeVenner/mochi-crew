@@ -1741,4 +1741,90 @@ describe('tutor code cards', () => {
     expect(await ui.find({ type: 'Code' })).toBeUndefined()
     await ui.unmount()
   })
+
+  /** A changed file whose one hunk holds a secret, as git prints it before the digest masks it. */
+  const SECRET_DIFF = [
+    'diff --git a/hooks/tutor.ts b/hooks/tutor.ts',
+    '--- a/hooks/tutor.ts',
+    '+++ b/hooks/tutor.ts',
+    '@@ -1,2 +1,5 @@',
+    ' export const one = 1',
+    '+const API_KEY=sk-test-123456789abcdef',
+    '+export const capped = 16_000',
+    '+export const floor = 0',
+    ' export const two = 2',
+    '',
+  ].join('\n')
+  const CHANGED = { log: COMMITS, 'rev-parse': '\n', 'name-status': 'M\0hooks/tutor.ts\0', numstat: '3\t0\thooks/tutor.ts\n', diff: SECRET_DIFF }
+  const LINE_STEM = 'Which line sets the digest cap?'
+  const anchoredQ = { ...choiceQ(0), at: { file: 'hooks/tutor.ts', quote: 'export const one = 1' } }
+  const lineQ = {
+    kind: 'line',
+    tag: 'what',
+    topic: 'digest cap',
+    prompt: LINE_STEM,
+    at: { file: 'hooks/tutor.ts' },
+    options: ['export const capped = 16_000', 'export const floor = 0', 'export const two = 2'],
+    answer: 0,
+    why: ['It names the cap.', 'That is the floor.', 'That one was already there.'],
+  }
+  const codeQuiz = (questions: readonly unknown[]): string => JSON.stringify({ v: 2, questions })
+
+  for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
+    test(`a digest round draws its code card from the masked excerpt it sent (${surface})`, { options: { tutorContext: 'digest' } }, async ($, on) => {
+      mock.clock(on)
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, git: CHANGED, completes: [reply(codeQuiz([anchoredQ, choiceQ(1), choiceQ(2), explainQ]), DIGEST_CALL)] })
+      await start($)
+      await warmUp($)
+      const ui = await tutorTab($, surface)
+      await ui.press({ key: 'start:recent' })
+      await shows(ui, FIRST_STEM)
+      const source = String((await ui.find({ type: 'Code' }))?.props.source ?? '')
+      expect(source.startsWith('@@ -1,2 +1,5 @@')).toBe(true)
+      expect(source).toContain(' export const one = 1')
+      expect(source).toContain('+const API_KEY=')
+      // The planted secret was masked before it was sent, and the card draws what was sent.
+      expect(source).not.toContain('sk-test-123456789abcdef')
+      expect(record.completeRequests[0]?.prompt ?? '').not.toContain('sk-test-123456789abcdef')
+      await shows(ui, 'hooks/tutor.ts · line 1')
+      expect(record.completeRequests).toHaveLength(1)
+      await ui.unmount()
+    })
+  }
+
+  test('a line question is graded locally with no model call', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: CHANGED, completes: [reply(codeQuiz([lineQ, choiceQ(1), choiceQ(2), explainQ]), DIGEST_CALL)] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, LINE_STEM)
+    expect(String((await ui.find({ type: 'Code' }))?.props.source ?? '')).toContain('+export const capped = 16_000')
+    // Each option is the hunk's own line, labelled by its number.
+    const right = await ui.find({ type: 'Button', text: /^L3 +export const capped = 16_000/ })
+    expect(await ui.find({ type: 'Button', text: /^L5 +export const two = 2/ })).toBeDefined()
+    await ui.press({ key: right?.key ?? '' })
+    await shows(ui, '✓ right')
+    await shows(ui, 'It names the cap.')
+    expect(record.completeRequests).toHaveLength(1)
+    expect(record.modelCalls).toBe(1)
+    await ui.unmount()
+  })
+
+  test('a digest anchor that quotes no line of the excerpt keeps its question without a card', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    mock.clock(on)
+    const invented = { ...anchoredQ, at: { file: 'hooks/tutor.ts', quote: 'export const invented = 42' } }
+    const notSent = { ...lineQ, at: { file: 'hooks/elsewhere.ts' } }
+    engine(on, { saved: { tutorConsent: 2 }, git: CHANGED, completes: [reply(codeQuiz([invented, notSent, choiceQ(1), choiceQ(2), explainQ]), DIGEST_CALL)] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    expect(await ui.find({ type: 'Code' })).toBeUndefined()
+    // The line question on a file the digest never held was dropped whole.
+    await shows(ui, 'q 1/4')
+    await ui.unmount()
+  })
 })
