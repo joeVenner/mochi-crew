@@ -107,6 +107,8 @@ export const CODE_TIGHT_LINES = 8
 const CODE_MIN_LINES = 3
 /** Rows a frame's border takes: its top and bottom. */
 const FRAME_ROWS = 2
+/** Columns a frame's border takes: its left and right. */
+const FRAME_COLUMNS = 2
 /** Rows an input field is assumed to take, its own border included. */
 const INPUT_ROWS = 3
 /** Boxes of the review deck, for the `●●○` a card shows. */
@@ -326,9 +328,9 @@ const skipControl: TutorControl = { key: 'skip', label: 'skip', hotkey: 's', act
 
 // ── code cards (B.4) ───────────────────────────────────────────────────────
 
-/** Rows one body or header row takes once wrapped at the pane's width. */
-const rowLines = (line: TutorRow, columns: number): number =>
-  line.isWrapped ? Math.max(1, wrapWords(line.cells.map(part => part.text).join(''), lineWidth(columns)).length) : 1
+/** Rows one body or header row takes once wrapped at `width`. */
+const rowLines = (line: TutorRow, width: number): number =>
+  line.isWrapped ? Math.max(1, wrapWords(line.cells.map(part => part.text).join(''), width).length) : 1
 
 /**
  * Rows a screen takes besides its code: header, body, field, controls and frame. An estimate the
@@ -336,7 +338,9 @@ const rowLines = (line: TutorRow, columns: number): number =>
  */
 const screenLines = (screen: TutorScreen, ctx: TutorViewContext): number => {
   const width = lineWidth(ctx.columns)
-  const text = [...screen.header, ...screen.body].reduce((sum, line) => sum + rowLines(line, ctx.columns), 0)
+  // The header and body sit inside the frame, so its border narrows them; the controls sit outside.
+  const textWidth = screen.frame === undefined ? width : Math.max(4, width - FRAME_COLUMNS)
+  const text = [...screen.header, ...screen.body].reduce((sum, line) => sum + rowLines(line, textWidth), 0)
   const listed = screen.controls
     .filter(isListedControl)
     .reduce((sum, control) => sum + Math.min(2, Math.max(1, wrapWords(control.label, Math.max(4, width - CHOICE_INDENT)).length)), 0)

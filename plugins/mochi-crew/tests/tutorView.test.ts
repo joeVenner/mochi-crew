@@ -501,6 +501,24 @@ describe('tutor view', () => {
     expect(keys.indexOf('code-fold')).toBe(keys.indexOf('stem') + 1)
   })
 
+  test('a framed stem is wrapped inside the border when the code is budgeted', async () => {
+    // One word as wide as the pane's text: a row of its own unframed, two once the border narrows it.
+    const code = quoted('const fresh = 2')
+    const linesFor = (prompt: string, bodyRows: number): number =>
+      codeLines(tutorScreen({ phase: 'question', round: round({ questions: [choice({ code, prompt })] }) }, ctx({ columns: 44, bodyRows }))).length
+    let compared = 0
+    for (let bodyRows = 12; bodyRows <= 40; bodyRows += 1) {
+      const narrow = linesFor(`${'w'.repeat(39)}?`, bodyRows)
+      const wide = linesFor(`${'w'.repeat(41)}?`, bodyRows)
+      // Only where the rows left, not the window's own cap, set the size.
+      const cap = tutorFold(bodyRows) === 'full' ? CODE_WINDOW : CODE_TIGHT_LINES
+      if (narrow === 0 || wide === 0 || narrow >= cap) continue
+      expect(wide).toBe(narrow - 1)
+      compared += 1
+    }
+    expect(compared > 0).toBe(true)
+  })
+
   test('a code card never takes more rows than the pane has', async () => {
     const states: readonly TutorState[] = [
       { phase: 'question', round: round({ questions: [choice({ code: quoted('const b7 = 7') })] }) },
