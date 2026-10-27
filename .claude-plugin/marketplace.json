@@ -11,7 +11,7 @@
     {
       "name": "mochi-crew",
       "source": "./plugins/mochi-crew",
-      "description": "Mod: a pixel cat in a side pane that reacts to your real session, with a crew of kitten subagents, XP, missions, a session journal, a session meter (model, context, prompt cache, limits or cost), a live file tree and a session badge that gives each session its own place, tab color and title emoji.",
+      "description": "Mod: a pixel cat in a side pane that reacts to your real session, with a crew of kitten subagents, XP, missions, a session journal, a session meter (model, context, prompt cache, limits or cost), a live file tree, a session badge that gives each session its own place, tab color and title emoji, and Mochi Tutor, which quizzes you on the project and on what Claude changed.",
       "category": "mod"
     }
   ]
