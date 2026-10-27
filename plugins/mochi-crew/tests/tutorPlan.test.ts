@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  DEFAULT_TUTOR_CONFIG, FIVE_MINUTES_MS, FORK_MAX_CONTEXT_TOKENS, choosePlan, isForkMiss, parseTutorConfig, planLabel,
+  DEFAULT_TUTOR_CONFIG, FIVE_MINUTES_MS, FORK_MAX_CONTEXT_TOKENS, afterDigest, afterFork, choosePlan, isForkMiss, parseTutorConfig, planLabel, wasForkMiss,
 } from '../hooks/tutorPlan'
 import type { TutorPlan, TutorPlanInput } from '../hooks/tutorPlan'
 
@@ -169,5 +169,44 @@ describe('isForkMiss', () => {
     expect(isForkMiss(usage(148_000, 1_000, 100))).toBe(false)
     expect(isForkMiss(usage(0, 0, 0))).toBe(true)
     expect(isForkMiss(usage(Number.NaN, 0, 0))).toBe(true)
+  })
+})
+
+describe('after a round call', () => {
+  const apiError = (status: number | null, error: 'rate_limit' | 'overloaded' | 'server_error' | 'unknown') =>
+    ({ isAnswered: false as const, reason: 'api-error' as const, status, error, usage: usage(0, 0, 0) })
+
+  test('afterFork parses a reply, stops on a busy API and falls back on anything else', async () => {
+    expect(afterFork({ isAnswered: true, text: '{"v":1}', usage: usage(10, 0, 0) })).toEqual({ kind: 'parse', text: '{"v":1}' })
+    expect(afterFork(apiError(429, 'rate_limit'))).toEqual({ kind: 'error', failure: { kind: 'api-error', status: 429, error: 'rate_limit' } })
+    expect(afterFork(apiError(529, 'overloaded'))).toEqual({ kind: 'error', failure: { kind: 'api-error', status: 529, error: 'overloaded' } })
+    // The status alone is enough when Claude Code could not name the kind.
+    expect(afterFork(apiError(429, 'unknown')).kind).toBe('error')
+    expect(afterFork(apiError(500, 'server_error'))).toEqual({ kind: 'digest' })
+    expect(afterFork(apiError(null, 'unknown'))).toEqual({ kind: 'digest' })
+    expect(afterFork({ isAnswered: false, reason: 'nothing-to-fork' })).toEqual({ kind: 'digest' })
+    expect(afterFork({ isAnswered: false, reason: 'empty-reply', usage: usage(10, 0, 0) })).toEqual({ kind: 'digest' })
+    expect(afterFork({ isAnswered: false, reason: 'aborted', usage: usage(0, 0, 0) })).toEqual({ kind: 'digest' })
+  })
+
+  test('afterDigest parses a reply and turns every failure into the round error, never a retry', async () => {
+    expect(afterDigest({ isAnswered: true, text: 'quiz', usage: usage(0, 0, 10) })).toEqual({ kind: 'parse', text: 'quiz' })
+    expect(afterDigest(apiError(429, 'rate_limit'))).toEqual({ kind: 'error', failure: { kind: 'api-error', status: 429, error: 'rate_limit' } })
+    expect(afterDigest(apiError(500, 'server_error'))).toEqual({ kind: 'error', failure: { kind: 'api-error', status: 500, error: 'server_error' } })
+    expect(afterDigest({ isAnswered: false, reason: 'empty-reply', usage: usage(0, 0, 10) })).toEqual({ kind: 'error', failure: { kind: 'empty-reply' } })
+    // A stopped round's reply is dropped before this, so a current `aborted` ran out of time.
+    expect(afterDigest({ isAnswered: false, reason: 'aborted', usage: usage(0, 0, 0) })).toEqual({ kind: 'error', failure: { kind: 'timeout' } })
+  })
+
+  test('wasForkMiss judges a fork round by its summed usage and nothing else', async () => {
+    const round = (source: 'fork' | 'digest' | 'review', spent: { calls: number; input: number; cacheRead: number; cacheWrite: number; output: number }) => ({
+      id: 'r', epoch: 1, focus: 'recent' as const, source, startedAt: 0, questions: [], index: 0, answers: [],
+      isHintShown: false, isRetry: false, chat: [], followUpsUsed: 0, usage: spent,
+    })
+    expect(wasForkMiss(round('fork', { calls: 1, input: 100, cacheRead: 0, cacheWrite: 148_000, output: 900 }))).toBe(true)
+    expect(wasForkMiss(round('fork', { calls: 1, input: 100, cacheRead: 148_000, cacheWrite: 1_000, output: 900 }))).toBe(false)
+    expect(wasForkMiss(round('digest', { calls: 1, input: 9_000, cacheRead: 0, cacheWrite: 0, output: 900 }))).toBe(false)
+    // A retry pass makes no call: zero usage proves nothing.
+    expect(wasForkMiss(round('fork', { calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }))).toBe(false)
   })
 })

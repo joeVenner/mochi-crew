@@ -1,5 +1,6 @@
-import type { ModelUsage, PluginOptions } from 'claude-code'
+import type { ModelCompleteResult, ModelForkResult, ModelUsage, PluginOptions } from 'claude-code'
 
+import type { TutorFailure, TutorRound } from '../types'
 import { formatSpan, formatTokens, isCertainlyCold } from './meter'
 import type { TtlEnv } from './meter'
 
@@ -143,4 +144,59 @@ export const isForkMiss = (usage: ModelUsage): boolean => {
   const read = tokenCount(usage.cache_read_input_tokens)
   const total = read + tokenCount(usage.cache_creation_input_tokens) + tokenCount(usage.input_tokens)
   return total === 0 || read / total < FORK_HIT_SHARE
+}
+
+/**
+ * Whether a finished round's fork re-read the chat at full price: its summed usage judged by
+ * `isForkMiss`. A round with no call (a retry pass) or from another source never counts.
+ */
+export const wasForkMiss = (round: TutorRound): boolean =>
+  round.source === 'fork' && round.usage.calls > 0 && isForkMiss({
+    input_tokens: round.usage.input,
+    output_tokens: round.usage.output,
+    cache_read_input_tokens: round.usage.cacheRead,
+    cache_creation_input_tokens: round.usage.cacheWrite,
+  })
+
+/** What a round does once its fork came back (B.3). */
+export type ForkNext =
+  | { readonly kind: 'parse'; readonly text: string }
+  | { readonly kind: 'digest' }
+  | { readonly kind: 'error'; readonly failure: TutorFailure }
+
+// A busy or rate-limited API turns the digest away just the same, so it is not tried.
+const isApiBusy = (status: number | null, error: string): boolean =>
+  error === 'rate_limit' || error === 'overloaded' || status === 429 || status === 529
+
+/**
+ * The B.3 rule for a fork's result: its text is parsed; a rate limit or an overloaded API stops
+ * the round with that error; anything else (nothing to fork yet, no text, another API error, an
+ * interrupted turn) falls back to the digest once.
+ */
+export const afterFork = (result: ModelForkResult): ForkNext => {
+  if (result.isAnswered) return { kind: 'parse', text: result.text }
+  if (result.reason === 'api-error' && isApiBusy(result.status, result.error)) {
+    return { kind: 'error', failure: { kind: 'api-error', status: result.status, error: result.error } }
+  }
+  return { kind: 'digest' }
+}
+
+/** What a digest round does once its call came back (B.3): parse the text, or stop. */
+export type DigestNext = { readonly kind: 'parse'; readonly text: string } | { readonly kind: 'error'; readonly failure: TutorFailure }
+
+/**
+ * The B.3 rule for a digest's result: its text is parsed, anything else is the round's error, and
+ * a digest is never retried. The caller drops a reply from a stopped round first, so an
+ * `aborted` reply that is still current ran out of its `timeoutMs`.
+ */
+export const afterDigest = (result: ModelCompleteResult): DigestNext => {
+  if (result.isAnswered) return { kind: 'parse', text: result.text }
+  switch (result.reason) {
+    case 'api-error':
+      return { kind: 'error', failure: { kind: 'api-error', status: result.status, error: result.error } }
+    case 'empty-reply':
+      return { kind: 'error', failure: { kind: 'empty-reply' } }
+    case 'aborted':
+      return { kind: 'error', failure: { kind: 'timeout' } }
+  }
 }

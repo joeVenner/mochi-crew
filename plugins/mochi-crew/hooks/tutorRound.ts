@@ -50,6 +50,11 @@ export type TutorEvent =
   | { kind: 'cancel' }
   | { kind: 'closed' }
 
+/** Questions in a new round, a spliced review card included (B.1). */
+export const ROUND_SIZE = 5
+// Where a due card goes in a new round: after two fresh questions, so the round opens on new work.
+const REVIEW_SLOT = 2
+
 /** Nothing spent yet. */
 export const EMPTY_USAGE: TutorUsage = { calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }
 
@@ -171,6 +176,20 @@ export const closeOutRound = (round: TutorRound): TutorRound => {
   const question = currentQuestion(round)
   if (question === undefined || currentAnswer(round) !== undefined) return round
   return { ...round, answers: [...round.answers, { questionId: question.id, outcome: 'skipped', hasUsedHint: round.isHintShown }] }
+}
+
+/**
+ * A saved card's question asked again: marked as a replay, keeping its own id (the deck finds
+ * its card by it), with a choice's options reshuffled from `seed` so it is not answered by place.
+ */
+export const replayQuestion = (question: TutorQuestion, seed: number): TutorQuestion =>
+  ({ ...(question.kind === 'choice' ? shuffleChoice(question, seed) : question), isReview: true as const })
+
+/** A new round's questions with one due card replayed at index 2, or at the end of a shorter list. */
+export const spliceReview = (questions: readonly TutorQuestion[], review: TutorQuestion | undefined, seed: number): readonly TutorQuestion[] => {
+  if (review === undefined || questions.some(question => question.id === review.id)) return questions
+  const at = Math.min(REVIEW_SLOT, questions.length)
+  return [...questions.slice(0, at), replayQuestion(review, seed * 31 + at), ...questions.slice(at)]
 }
 
 const withAnswer = (round: TutorRound, answer: TutorAnswer): TutorRound => ({

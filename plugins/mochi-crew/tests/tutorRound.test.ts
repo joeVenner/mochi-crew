@@ -15,8 +15,10 @@ import {
   gradeChoice,
   isAwaitingSelfGrade,
   isLastQuestion,
+  replayQuestion,
   roundXp,
   scoreRound,
+  spliceReview,
   verdictOf,
   xpForAnswer,
 } from '../hooks/tutorRound'
@@ -396,5 +398,28 @@ describe('tutor round', () => {
     }
     const perfect = STATES.summary
     expect(applyTutor(perfect, { kind: 'retry-missed', epoch: 8, at: 0 })).toBe(perfect)
+  })
+})
+
+describe('review cards in a round', () => {
+  test('replayQuestion keeps the id, marks the replay and moves the answer with its reason', async () => {
+    const card = choice('old:2')
+    const replayed = replayQuestion(card, 41)
+    expect(replayed).toMatchObject({ id: 'old:2', isReview: true, topic: card.topic })
+    if (replayed.kind !== 'choice') throw new Error('kind changed')
+    expect(replayed.options[replayed.answer]).toBe('never hold index.lock')
+    expect(replayed.why[replayed.answer]).toBe('right because')
+    expect(replayQuestion(explain('old:3'), 41)).toEqual({ ...explain('old:3'), isReview: true })
+  })
+
+  test('spliceReview puts one due card third, or last in a shorter round, and never twice', async () => {
+    const fresh = [choice('r2:0'), choice('r2:1'), choice('r2:2'), explain('r2:3')]
+    const spliced = spliceReview(fresh, choice('old:2'), 7)
+    expect(spliced.map(q => q.id)).toEqual(['r2:0', 'r2:1', 'old:2', 'r2:2', 'r2:3'])
+    expect(spliced[2]?.isReview).toBe(true)
+    expect(spliceReview(fresh.slice(0, 1), choice('old:2'), 7).map(q => q.id)).toEqual(['r2:0', 'old:2'])
+    expect(spliceReview(fresh, undefined, 7)).toBe(fresh)
+    const already = [...fresh, choice('old:2')]
+    expect(spliceReview(already, choice('old:2'), 7)).toBe(already)
   })
 })
