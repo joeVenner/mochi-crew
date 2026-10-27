@@ -289,7 +289,8 @@ When Claude writes most of the code, it is easy to ship changes you couldn't exp
 quizzes you on this project and on what Claude changed, so you understand what you ship. Press `q`
 in the pane, or run `/mascot tutor`, and it opens in a tab of its own. Nothing is sent to a model
 until you start a round. The first time, a notice says what a round sends: `y` accepts it, `n`
-closes the tab.
+closes the tab. One yes covers every project. The notice asks again after `/mascot tutor reset`, or
+when an update changes what it describes.
 
 ```
 ▍ Mochi Tutor              LV 2 · 4 rounds
@@ -439,7 +440,8 @@ Commands:
 /mascot tutor start | digest   start a round as the `ctx` line says, or always from the digest
 /mascot tutor review           a review round of missed questions, with no model request
 /mascot tutor stop             end the round, or stop waiting for a reply
-/mascot tutor reset            clear this project's tutor level, rounds and review deck
+/mascot tutor reset            clear this project's tutor level, rounds and review deck, and the
+                               notice's yes (shared by every project, so the next round asks again)
 /mascot badge                  this session's color and title
 /mascot badge on|off           tint the tab and add the emoji title, or stop (on by default)
 /mascot badge color <name>     plum, harbor, pine, claret, rust, moss, walnut, graphite
@@ -472,42 +474,62 @@ Commands:
   commit subjects to the conversation, tool output and all, that Claude Code already sent; Mochi
   masks only what it adds. Both kinds of round also send your tutor level and the topics you
   mastered or recently missed. The digest holds at most 16,000 characters: the folder name and
-  branch, recent commit subjects, the names of changed files and excerpts of their `git diff` (files
-  this session touched first), the first 60 lines of up to two new files this session touched, for
+  branch, recent commit subjects, the names and `git diff HEAD` excerpts of every uncommitted change
+  to tracked files in this folder, staged or not and removed lines included (files Claude touched in
+  this session first, then by lines added; past 150 files the rest are only counted), the first 60
+  lines of up to two new files this session touched, for
   the big-picture focus a folder layout from `git ls-files` names, your last few prompts, short
   excerpts of Claude's replies (for the last-turn focus, its last reply, up to 1,200 characters),
   and tool names with file paths. Grading sends the question, its
   reference answer and key points, and your answer. A follow-up sends the question with its answer
   and reasons, your answer, your last two follow-ups on it, your message and, on a digest round, the
   diff excerpt of the question's file. The digest, grading and follow-ups never include tool output,
-  command text or other file contents. `.env*`, key, certificate, `*secret*`, `*credential*`, `.npmrc`, `.netrc`, Terraform state,
-  lock and minified files, `dist/` and `node_modules/` are left out of every tutor git call by
-  pathspec, and new files matching the same rules are never read; private-key
-  blocks and text that looks like a secret are masked in everything Mochi adds, typed answers
-  included. Model replies are drawn as plain text with control characters removed and are never run
-  or sent back to the session. Nothing runs in the background, and `tutorContext: digest` never
-  reuses the chat.
+  command text or other file contents.
+- **Files meant for secrets are never diffed or read.** They are matched by name, in any folder and
+  ignoring case: `.env*`, `*secret*`, `*credential*`, private keys (`id_rsa*`, `id_dsa*`,
+  `id_ecdsa*`, `id_ed25519*`, `*.key`, `*.pem`, `*.p8`, `*.ppk`), certificate and key stores
+  (`*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`), `*.gpg`, `*.asc`, `.npmrc`, `.netrc`,
+  `.pgpass`, `.htpasswd`, `.pypirc`, `.dockercfg`, `.docker/config.json`, `.kube/config`,
+  `kubeconfig`, `.vault-token`, Terraform state and `*.tfvars`, `config/database.yml`,
+  `application*.properties`, and anything under `.aws/`, `.ssh/` or `.gnupg/`. Lock and minified
+  files, `dist/` and `node_modules/` are left out too. Mochi lists the changes first, with git's
+  rename and copy detection, and diffs only paths whose old and new names both pass, so
+  `git mv .env notes.txt` stays out. A new file is read only when it is a regular file, not a link,
+  at most 200 KB, and lands inside the project under a name that passes. The names of such files
+  can still appear where a round lists paths (the tool trail, a fork's file list). Each tutor git
+  call's output is capped at 1 MB.
+- **Common secret patterns are masked, not every secret.** In everything Mochi adds, typed answers
+  included, private-key blocks are removed, and tokens and API keys of well-known shapes, auth
+  headers, URL credentials and secret-named values (`API_KEY=…`, `password: …`) are masked, in diff
+  lines and file names too. Masking works by pattern, so it can miss a secret in an unusual form.
+  A secret copied, or moved and mostly rewritten, under an ordinary name is not a rename to git,
+  so only masking guards it.
+- **Model replies are only drawn.** They are shown as plain text, with tabs turned into spaces and
+  control, invisible and bidirectional characters replaced, and are never run or sent back to the
+  session. Nothing runs in the background, and `tutorContext: digest` never reuses the chat.
 - **Local commands, no shell.** The file tree lists folders on the way to edited files and runs
-  `git status`, `git diff --numstat`, `git branch` and `git worktree list` in the project (and
-  `git status` and `git diff` in its worktrees), and a tutor round runs `git log`, `git diff` and
-  `git ls-files` in the project, all without taking git's index lock and with the repository's
-  fsmonitor command turned off. File and branch names are drawn with control
-  characters masked. Clicking a file runs your editor with that file's path. Commands run by
-  argument list, never through a shell, and only for files that resolve inside the project or
-  inside a worktree git lists for it. The session badge runs `ps` to find this session's tab,
+  `git rev-parse`, `git status`, `git diff --numstat`, `git branch` and `git worktree list` in the
+  project (and `git status` and `git diff` in its worktrees), and a tutor round runs `git rev-parse`,
+  `git log`, `git diff` and `git ls-files` in the project, all without taking git's index lock and
+  with the repository's fsmonitor command turned off. File and branch names are drawn with control,
+  invisible, bidirectional and tag characters replaced. Clicking a file runs your editor with that
+  file's path. Commands run by argument list, never through a shell, and only for files that
+  resolve inside the project or inside a worktree git lists for it. The session badge runs `ps` to find this session's tab,
   `osascript` to read and set Terminal.app tab colors (with every value passed as an argument,
   never as script text), and `grep` to read Claude Code's topic from the session transcript (on
   Windows, which has no `grep`, it reads that file instead). Titles it sets are drawn from that
   topic or your own words, with control characters removed.
-- **Secrets are masked on screen.** Commands shown in the HUD have tokens, auth headers, URL
-  credentials and secret-looking env vars or flags replaced with `••••`. This affects the display
-  only; your commands run unchanged.
+- **Secrets are masked on screen.** Commands shown in the HUD have common secret patterns replaced
+  with `••••`: tokens and API keys of well-known shapes (GitHub, Slack, AWS, Stripe, Google, JWTs
+  and others), auth headers, URL credentials, secret-looking env vars or flags, and secret-named
+  `name: value` or `name = value` settings. An unusual secret can still show. This affects the
+  display only; your commands run unchanged.
 - **Never in the way.** Every hook passes the tool call through untouched, even if Mochi's own
   bookkeeping fails, and all scoring happens after the result is already on its way back.
 - **What is saved.** Level, XP, outfit, sound setting, the file tree switch, mood, energy and
   badges persist in Claude Code's per-plugin store. So do the session badge switch and, for the 300
   most recent sessions, each one's color, a title you pinned and the last few titles Mochi set,
-  which include Claude Code's topic for that session. So do the tutor's consent and, for up to 12
+  which include Claude Code's topic for that session. So do the tutor's consent (one for every project) and, for up to 12
   projects, each one's tutor level, streak and round count, up to 20 missed questions to review
   (with their options and reasons, as the model wrote them), and the topics mastered and recently
   missed. The session journal, missions, meter and the tree's touched files reset every session,
