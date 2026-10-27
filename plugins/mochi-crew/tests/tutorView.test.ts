@@ -572,6 +572,46 @@ describe('tutor view', () => {
     expect(tutorScreen({ phase: 'question', round: round() }, ctx()).code).toBe(undefined)
   })
 
+  test('c opens flashcards from Home and the summary while the deck holds a card', async () => {
+    const home: TutorState = { phase: 'home', focus: 'recent', isDigestOnly: false }
+    const cardsOf = (screen: TutorScreen) => screen.controls.find(control => control.hotkey === 'c')
+    expect(cardsOf(tutorScreen(home, ctx()))).toBe(undefined)
+    const due = cardsOf(tutorScreen(home, ctx({ project: cardsProject() })))
+    expect(due?.label).toBe('cards (2 due)')
+    expect(due?.action).toEqual({ kind: 'cards' })
+    const ahead = cardsProject([CARDS[1]])
+    expect(cardsOf(tutorScreen(home, ctx({ project: ahead })))?.label).toBe('cards (1)')
+    // Flashcards send nothing, so an empty Home still offers them.
+    expect(cardsOf(tutorScreen(home, ctx({ project: ahead, hasContent: false })))?.label).toBe('cards (1)')
+    const summary = everyState().find(state => state.phase === 'summary')
+    if (summary === undefined) throw new Error('fixture has no summary')
+    expect(cardsOf(tutorScreen(summary, ctx()))).toBe(undefined)
+    const onSummary = tutorScreen(summary, ctx({ project: ahead }))
+    expect(onSummary.controls.map(control => control.hotkey)).toEqual(['n', 'r', 'c', 'x'])
+    expect(cardsOf(onSummary)?.label).toBe('cards')
+  })
+
+  test('k keeps an answered question until the deck holds it, and never a replay', async () => {
+    const keepOf = (screen: TutorScreen) => screen.controls.find(control => control.hotkey === 'k')
+    const answered: TutorState = { phase: 'feedback', round: round({ answers: [right] }) }
+    const keep = keepOf(tutorScreen(answered, ctx()))
+    expect(keep).toEqual({ key: 'keep', label: 'keep card', hotkey: 'k', action: { kind: 'keep' } })
+    expect(tutorScreen(answered, ctx()).controls.map(control => control.hotkey)).toEqual(['n', 'k', 'x'])
+    // A miss may be kept too; the round would keep it anyway.
+    const missed: TutorState = { phase: 'feedback', round: round({ answers: [{ ...right, outcome: 'wrong', picked: 1 }] }) }
+    expect(keepOf(tutorScreen(missed, ctx()))).not.toBe(undefined)
+    const graded: TutorState = { phase: 'feedback', round: round({ index: 1, answers: [right, { questionId: 'r1:1', outcome: 'right', hasUsedHint: false, points: [true, true] }] }) }
+    expect(keepOf(tutorScreen(graded, ctx()))).not.toBe(undefined)
+    // Kept already: the deck holds the id.
+    expect(keepOf(tutorScreen(answered, ctx({ project: cardsProject() })))).toBe(undefined)
+    const replay: TutorState = { phase: 'feedback', round: round({ source: 'review', questions: [choice({ id: 'old', isReview: true })], answers: [{ ...right, questionId: 'old' }] }) }
+    expect(keepOf(tutorScreen(replay, ctx()))).toBe(undefined)
+    // Not while a follow-up runs, and not on a self-grade or a question screen.
+    expect(keepOf(tutorScreen({ phase: 'asking', round: round({ answers: [right] }), epoch: 1, since: 0 }, ctx()))).toBe(undefined)
+    expect(keepOf(tutorScreen({ phase: 'feedback', round: round({ index: 1, answers: [right] }) }, ctx()))).toBe(undefined)
+    expect(keepOf(tutorScreen({ phase: 'question', round: round() }, ctx()))).toBe(undefined)
+  })
+
   test('every flashcard screen draws its controls with a deck, on every surface and fold', async () => {
     const project = cardsProject()
     for (const surface of SURFACES) {
