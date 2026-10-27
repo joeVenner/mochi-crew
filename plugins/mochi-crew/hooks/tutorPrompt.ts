@@ -292,7 +292,7 @@ const questionLines = (question: TutorQuestion): readonly string[] => {
 const answerLines = (question: TutorQuestion, answer: TutorAnswer | undefined): readonly string[] => {
   if (answer === undefined) return ['Learner: not answered yet.']
   if (answer.outcome === 'skipped') return ['Learner: skipped it.']
-  if (question.kind === 'choice' && answer.picked !== undefined) {
+  if (question.kind !== 'explain' && answer.picked !== undefined) {
     const option = question.options[answer.picked]
     return [`Learner picked ${answer.picked + 1}${option === undefined ? '' : `. ${maskLine(option, 120)}`} (${answer.outcome}).`]
   }

@@ -1,5 +1,5 @@
 import type {
-  ChoiceQuestion,
+  OptionQuestion,
   ExplainQuestion,
   TutorAnswer,
   TutorFocus,
@@ -381,7 +381,7 @@ const loadingScreen = (state: Extract<TutorState, { phase: 'loading' }>, ctx: Tu
 }
 
 /** S3a: a choice question. No input on screen, so the digit hotkeys stay live. */
-const choiceScreen = (round: TutorRound, question: ChoiceQuestion, ctx: TutorViewContext): TutorScreen => {
+const choiceScreen = (round: TutorRound, question: OptionQuestion, ctx: TutorViewContext): TutorScreen => {
   const fold = tutorFold(ctx.bodyRows)
   const options: readonly TutorControl[] = question.options.map((option, index) => ({
     key: `opt:${question.id}:${index}`,
@@ -464,12 +464,12 @@ const optionEcho = (index: number, text: string, columns: number): string => {
 }
 
 /** The lowest shuffled index that is not the answer: the distractor most worth explaining. */
-const tempting = (question: ChoiceQuestion): number | undefined => {
+const tempting = (question: OptionQuestion): number | undefined => {
   const index = question.options.findIndex((_option, at) => at !== question.answer)
   return index < 0 ? undefined : index
 }
 
-const choiceFeedbackRows = (question: ChoiceQuestion, answer: TutorAnswer, ctx: TutorViewContext, fold: Fold): readonly TutorRow[] => {
+const choiceFeedbackRows = (question: OptionQuestion, answer: TutorAnswer, ctx: TutorViewContext, fold: Fold): readonly TutorRow[] => {
   const correct = question.options[question.answer] ?? ''
   const correctWhy = clean(question.why[question.answer] ?? '')
   const picked = answer.picked
@@ -525,7 +525,8 @@ const answeredFeedback = (round: TutorRound, question: TutorQuestion, answer: Tu
   const isAsking = askingSince !== null
   // Review rounds earn half of the sum at the end, so a per-answer figure there would overstate it.
   const xp = round.source === 'review' ? 0 : xpForAnswer(answer, round.isRetry)
-  const verdict = VERDICTS[question.kind][answer.outcome]
+  // A line question is picked from options like a choice, so it reads the same verdicts.
+  const verdict = VERDICTS[question.kind === 'line' ? 'choice' : question.kind][answer.outcome]
   const header = questionHeader(round, [cell('  ', 'dim'), verdict, ...(xp > 0 ? [cell(`  +${xp} XP`, 'accent')] : [])])
   const place = placeText(question)
   const left = followUpsLeft(round)
@@ -548,7 +549,7 @@ const answeredFeedback = (round: TutorRound, question: TutorQuestion, answer: Tu
   return {
     header: headerOf(header, ctx, fold),
     body: bodyOf([
-      ...(question.kind === 'choice' ? choiceFeedbackRows(question, answer, ctx, fold) : explainFeedbackRows(question, answer, ctx)),
+      ...(question.kind === 'explain' ? explainFeedbackRows(question, answer, ctx) : choiceFeedbackRows(question, answer, ctx, fold)),
       ...(place === null || fold !== 'full' ? [] : [labelled('see', 'see', place, 'dim')]),
       ...chatRows(round),
       ...askRows,
@@ -610,7 +611,7 @@ const emptyRoundScreen = (ctx: TutorViewContext): TutorScreen => {
 const questionScreen = (round: TutorRound, ctx: TutorViewContext): TutorScreen => {
   const question = currentQuestion(round)
   if (question === undefined) return emptyRoundScreen(ctx)
-  return question.kind === 'choice' ? choiceScreen(round, question, ctx) : explainScreen(round, question, ctx)
+  return question.kind === 'explain' ? explainScreen(round, question, ctx) : choiceScreen(round, question, ctx)
 }
 
 /** Questions worth another look: missed, partial, skipped, or right only with the hint. */

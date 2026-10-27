@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ChoiceQuestion, ExplainQuestion, TutorExchange, TutorLevel } from '../types'
+import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorExchange, TutorLevel } from '../types'
 import { MASK } from '../hooks/redact'
 import type { Digest } from '../hooks/tutorDigest'
 import type { TutorConfig } from '../hooks/tutorPlan'
@@ -47,6 +47,20 @@ const explain: ExplainQuestion = {
   prompt: 'In your own words: how are worktrees placed?',
   reference: 'Each linked worktree gets its own section under the main root.',
   keyPoints: ['own section', 'under the main root'],
+}
+
+const lineQuestion: LineQuestion = {
+  id: 'r1:2',
+  kind: 'line',
+  tag: 'how',
+  topic: 'git locks',
+  prompt: 'Which line keeps git from taking the index lock?',
+  options: ["const args = ['--no-optional-locks']", 'return run(args)'],
+  answer: 0,
+  why: ['Right: the flag is set here.', 'Wrong: this only runs git.'],
+  lineNumbers: [12, 13],
+  code: { file: 'hooks/register.tsx', diff: "@@ -11,0 +12,2 @@\n+const args = ['--no-optional-locks']\n+return run(args)", focusLine: 12 },
+  file: 'hooks/register.tsx',
 }
 
 describe('tutorPrompt', () => {
@@ -184,5 +198,12 @@ describe('tutorPrompt', () => {
     expect(without).not.toContain('kind="excerpt"')
     const withExcerpt = promptOf(askRequest(explain, undefined, [], 'what?', '+ placeFile(entry)', CONFIG).prompt)
     expect(withExcerpt).toContain('<data kind="excerpt">\n+ placeFile(entry)\n</data>')
+  })
+
+  test('a follow-up on a line question names the options and the pick', async () => {
+    const prompt = promptOf(askRequest(lineQuestion, { questionId: 'r1:2', outcome: 'wrong', hasUsedHint: false, picked: 1 }, [], 'why not that one?', undefined, CONFIG).prompt)
+    expect(prompt).toContain("1. const args = ['--no-optional-locks'] (correct)")
+    expect(prompt).toContain('Learner picked 2. return run(args) (wrong).')
+    expect(prompt).not.toContain('no typed answer')
   })
 })

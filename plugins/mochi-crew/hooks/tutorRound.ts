@@ -1,6 +1,6 @@
 import type { ModelUsage } from 'claude-code'
 
-import type { ChoiceQuestion, TutorAnswer, TutorFailure, TutorFocus, TutorLevel, TutorOutcome, TutorQuestion, TutorRound, TutorState, TutorUsage } from '../types'
+import type { OptionQuestion, TutorAnswer, TutorFailure, TutorFocus, TutorLevel, TutorOutcome, TutorQuestion, TutorRound, TutorState, TutorUsage } from '../types'
 import { cleanModelText, shuffleChoice } from './tutorParse'
 
 /** Follow-ups allowed on one question (B.6). */
@@ -94,8 +94,8 @@ export const isAnswerTooShort = (text: string): boolean => text.replace(/\s/g, '
 export const followUpsLeft = (round: TutorRound): number =>
   Math.max(0, Math.min(FOLLOW_UPS_PER_QUESTION - round.chat.length, FOLLOW_UPS_PER_ROUND - round.followUpsUsed))
 
-/** Local grading for a choice: the shuffled answer index is the only right pick. */
-export const gradeChoice = (question: ChoiceQuestion, picked: number): TutorOutcome => (picked === question.answer ? 'right' : 'wrong')
+/** Local grading for a choice or line question: the answer index, after any reordering, is the only right pick. */
+export const gradeChoice = (question: OptionQuestion, picked: number): TutorOutcome => (picked === question.answer ? 'right' : 'wrong')
 
 /** An explain verdict from the grader's per-key-point marks (B.4): all is right, at least half is partial. */
 export const verdictOf = (points: readonly boolean[]): TutorOutcome => {
@@ -208,6 +208,7 @@ export const closeOutRound = (round: TutorRound): TutorRound => {
 /**
  * A saved card's question asked again: marked as a replay, keeping its own id (the deck finds
  * its card by it), with a choice's options reshuffled from `seed` so it is not answered by place.
+ * A line question's options stay in file order, the order its code card shows them in.
  */
 export const replayQuestion = (question: TutorQuestion, seed: number): TutorQuestion =>
   ({ ...(question.kind === 'choice' ? shuffleChoice(question, seed) : question), isReview: true as const })
@@ -357,7 +358,7 @@ const onQuestion = (state: AnswerState, event: TutorEvent): TutorState => {
       if (round.isHintShown || question.hint === undefined) return state
       return { phase: 'question', round: { ...round, isHintShown: true } }
     case 'chose': {
-      if (question.kind !== 'choice' || !Number.isInteger(event.index) || event.index < 0 || event.index >= question.options.length) return state
+      if (question.kind === 'explain' || !Number.isInteger(event.index) || event.index < 0 || event.index >= question.options.length) return state
       const answer: TutorAnswer = { questionId: question.id, outcome: gradeChoice(question, event.index), hasUsedHint: round.isHintShown, picked: event.index }
       return { phase: 'feedback', round: withAnswer(round, answer) }
     }
@@ -498,7 +499,8 @@ const onError = (state: Extract<TutorState, { phase: 'error' }>, event: TutorEve
  * The state after one event; an event that does not fit the phase returns the same object, so
  * a late or doubled press is a no-op. Pure: times, epochs and seeds come from the event.
  *
- * - `chose` and `skip` fit only `question`; `chose` is ignored on an explain question.
+ * - `chose` and `skip` fit only `question`; `chose` is ignored on an explain question and
+ *   grades a line question like a choice, with no call.
  * - `next` on the last question stays put: the handler scores the round and sends `finished`.
  * - `cancel` from `loading` goes home; from `grading` to the ungraded feedback; from `asking`
  *   back to feedback.

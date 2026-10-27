@@ -228,6 +228,8 @@ export type TutorQuestionBase = {
   /** A project-relative path, kept only when it matched a file the tutor was given. */
   readonly file?: string
   readonly symbol?: string
+  /** The code card drawn under the prompt, when the question pointed at a line the plugin found. */
+  readonly code?: TutorCode
   /** Set on a question replayed from the review deck. */
   readonly isReview?: true
 }
@@ -247,7 +249,23 @@ export type ExplainQuestion = TutorQuestionBase & {
   readonly keyPoints: readonly string[]
 }
 
-export type TutorQuestion = ChoiceQuestion | ExplainQuestion
+/**
+ * Tutor: which line of the code card does something, graded locally like a choice. Each option
+ * is a line of `code`'s one hunk; `lineNumbers` holds each option's number as shown, in order.
+ */
+export type LineQuestion = TutorQuestionBase & {
+  readonly kind: 'line'
+  readonly options: readonly string[]
+  readonly answer: number
+  readonly why: readonly string[]
+  readonly lineNumbers: readonly number[]
+  readonly code: TutorCode
+}
+
+/** Tutor: a question answered by picking one of its options. */
+export type OptionQuestion = ChoiceQuestion | LineQuestion
+
+export type TutorQuestion = ChoiceQuestion | ExplainQuestion | LineQuestion
 
 /** Tutor: where a round's questions came from. */
 export type TutorSource = 'fork' | 'digest' | 'review'
