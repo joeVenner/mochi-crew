@@ -1,6 +1,8 @@
 import type { ModelUsage } from 'claude-code'
 
 import type { OptionQuestion, TutorAnswer, TutorFailure, TutorFocus, TutorLevel, TutorOutcome, TutorQuestion, TutorRound, TutorState, TutorUsage } from '../types'
+import { applyFlash } from './tutorCards'
+import type { FlashEvent } from './tutorCards'
 import { cleanModelText, shuffleChoice } from './tutorParse'
 
 /** Follow-ups allowed on one question (B.6). */
@@ -50,6 +52,7 @@ export type TutorEvent =
   | { kind: 'retry-missed'; epoch: number; at: number }
   | { kind: 'cancel' }
   | { kind: 'closed' }
+  | FlashEvent
 
 /** Questions in a new round, a spliced review card included (B.1). */
 export const ROUND_SIZE = 5
@@ -138,10 +141,11 @@ export const roundXp = (round: TutorRound): number => {
 const tokens = (count: number): number => (Number.isFinite(count) && count > 0 ? count : 0)
 
 /** Toasts for a start or review that the screen on show turns away. */
-export const TUTOR_REFUSALS: Readonly<{ writing: string; checking: string; mid: string }> = {
+export const TUTOR_REFUSALS: Readonly<{ writing: string; checking: string; mid: string; cards: string }> = {
   writing: 'Mochi is already writing one.',
   checking: 'Mochi is checking your answer.',
   mid: 'Finish or end this round first.',
+  cards: 'Finish or end the flashcards first.',
 }
 
 /**
@@ -158,10 +162,20 @@ export const tutorStartRefusal = (state: TutorState): string | undefined => {
     case 'question':
     case 'feedback':
       return TUTOR_REFUSALS.mid
+    case 'cards':
+      // A round would replace the session on screen; its ratings are saved, but the learner chose to flip.
+      return TUTOR_REFUSALS.cards
     default:
       return undefined
   }
 }
+
+/**
+ * Why flashcards cannot open over `state`, as a toast, or undefined when they can (A.2). They
+ * send nothing, so consent does not matter, but a call or a round on screen is not cut short.
+ */
+export const flashOpenRefusal = (state: TutorState): string | undefined =>
+  state.phase === 'cards' ? undefined : tutorStartRefusal(state)
 
 /** Adds one call's usage to a running total; failed and stale calls count too (C.7). */
 export const addTutorUsage = (total: TutorUsage, usage: ModelUsage): TutorUsage => ({
@@ -314,6 +328,8 @@ const onHome = (state: Extract<TutorState, { phase: 'home' }>, event: TutorEvent
       return event.round.source === 'review' && event.round.questions.length > 0 ? { phase: 'question', round: event.round } : state
     case 'failed':
       return { phase: 'error', failure: event.failure, focus: state.focus, canTryDigest: event.canTryDigest }
+    case 'cards-open':
+      return applyFlash(state, event)
     case 'closed':
       return { phase: 'closed' }
     default:
@@ -475,10 +491,24 @@ const onSummary = (state: Extract<TutorState, { phase: 'summary' }>, event: Tuto
       return startLoading(event)
     case 'loaded':
       return event.round.source === 'review' && event.round.questions.length > 0 ? { phase: 'question', round: event.round } : state
+    case 'cards-open':
+      return applyFlash(state, event)
     case 'closed':
       return { phase: 'closed' }
     default:
       return state
+  }
+}
+
+/** A finished flashcard session starts a round as the summary does; the rest is the flashcards' own. */
+const onCardsDone = (state: Extract<TutorState, { phase: 'cards-done' }>, event: TutorEvent): TutorState => {
+  switch (event.kind) {
+    case 'loading':
+      return startLoading(event)
+    case 'loaded':
+      return event.round.source === 'review' && event.round.questions.length > 0 ? { phase: 'question', round: event.round } : state
+    default:
+      return applyFlash(state, event)
   }
 }
 
@@ -488,6 +518,8 @@ const onError = (state: Extract<TutorState, { phase: 'error' }>, event: TutorEve
       return startLoading(event)
     case 'pick-focus':
       return { phase: 'home', focus: event.focus, isDigestOnly: false }
+    case 'cards-open':
+      return applyFlash(state, event)
     case 'closed':
       return { phase: 'closed' }
     default:
@@ -504,6 +536,7 @@ const onError = (state: Extract<TutorState, { phase: 'error' }>, event: TutorEve
  * - `next` on the last question stays put: the handler scores the round and sends `finished`.
  * - `cancel` from `loading` goes home; from `grading` to the ungraded feedback; from `asking`
  *   back to feedback.
+ * - Flashcard events and screens are `applyFlash`'s; a finished session may start a round.
  */
 export const applyTutor = (state: TutorState, event: TutorEvent): TutorState => {
   switch (state.phase) {
@@ -527,5 +560,9 @@ export const applyTutor = (state: TutorState, event: TutorEvent): TutorState => 
       return onSummary(state, event)
     case 'error':
       return onError(state, event)
+    case 'cards':
+      return applyFlash(state, event)
+    case 'cards-done':
+      return onCardsDone(state, event)
   }
 }

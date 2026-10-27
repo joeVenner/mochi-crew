@@ -1085,7 +1085,7 @@ const TUTOR_NEW_FILE_LINES = 60
 
 const TUTOR_CLOSED: TutorState = { phase: 'closed' }
 const NO_TUTOR_PROJECT: TutorProject | null = null
-const FRESH_TUTOR_SESSION: TutorSession = { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false }
+const FRESH_TUTOR_SESSION: TutorSession = { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false, flashXp: 0 }
 const tutor = atom({ plugin: 'mochi-crew', key: 'tutor' } as const, TUTOR_CLOSED)
 const tutorConsent = atom({ plugin: 'mochi-crew', key: 'tutorConsent' } as const, 0)
 const tutorProject = atom({ plugin: 'mochi-crew', key: 'tutorProject' } as const, NO_TUTOR_PROJECT)
@@ -1990,7 +1990,11 @@ const pressTutor = async ($: EngineInterface, action: TutorAction): Promise<void
 
 /** The focus a screen was on, for the Home it goes back to. */
 const focusOf = (state: Exclude<TutorState, { phase: 'closed' | 'consent' }>): TutorFocus =>
-  state.phase === 'home' || state.phase === 'loading' || state.phase === 'error' ? state.focus : state.round.focus
+  state.phase === 'home' || state.phase === 'loading' || state.phase === 'error'
+    ? state.focus
+    : state.phase === 'cards' || state.phase === 'cards-done'
+      ? state.flash.focus
+      : state.round.focus
 
 /**
  * Session end (C.6): the round in flight is stopped and any on screen dropped unscored, as a new

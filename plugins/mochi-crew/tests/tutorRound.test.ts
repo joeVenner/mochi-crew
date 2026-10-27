@@ -20,6 +20,7 @@ import {
   scoreRound,
   spliceReview,
   TUTOR_REFUSALS,
+  flashOpenRefusal,
   tutorStartRefusal,
   verdictOf,
   xpForAnswer,
@@ -113,6 +114,8 @@ const STATES: Readonly<Record<TutorState['phase'], TutorState>> = {
   asking: { phase: 'asking', round: round(FIVE, { answers: [answer('r1:0', 'right')] }), epoch: 4, since: 0 },
   summary: { phase: 'summary', round: round(FIVE, { answers: FIVE.map(q => answer(q.id, 'right')) }), xp: 35, levelBefore: 2, levelAfter: 2, wasForkMiss: false },
   error: { phase: 'error', failure: { kind: 'timeout' }, focus: 'recent', canTryDigest: true },
+  cards: { phase: 'cards', flash: { ids: ['c:0', 'c:1'], index: 0, isFlipped: true, ratings: [], startedAt: 0, focus: 'turn', xpLeft: 10 } },
+  'cards-done': { phase: 'cards-done', flash: { ids: ['c:0'], index: 0, isFlipped: true, ratings: [{ id: 'c:0', rating: 'good', wasDue: true }], startedAt: 0, focus: 'turn', xpLeft: 10 }, xp: 1 },
 }
 
 const EVENTS: readonly TutorEvent[] = [
@@ -140,20 +143,26 @@ const EVENTS: readonly TutorEvent[] = [
   { kind: 'retry-missed', epoch: 6, at: 0 },
   { kind: 'cancel' },
   { kind: 'closed' },
+  { kind: 'cards-open', ids: ['c:0'], at: 0, focus: 'recent', xpLeft: 10 },
+  { kind: 'flip' },
+  { kind: 'rate', id: 'c:0', rating: 'good', wasDue: true },
+  { kind: 'cards-end' },
 ]
 
 /** Which events each phase acts on; every other pairing must hand back the same object. */
 const FITS: Readonly<Record<TutorState['phase'], ReadonlySet<TutorEvent['kind']>>> = {
   closed: new Set(['open']),
   consent: new Set(['open', 'consented', 'declined', 'closed']),
-  home: new Set(['pick-focus', 'toggle-digest', 'loading', 'failed', 'closed']),
+  home: new Set(['pick-focus', 'toggle-digest', 'loading', 'failed', 'closed', 'cards-open']),
   loading: new Set(['loading', 'loaded', 'failed', 'cancel', 'closed']),
   question: new Set(['hint', 'chose', 'skip', 'finished', 'closed']),
   feedback: new Set(['asking', 'next', 'finished', 'closed']),
   grading: new Set(['graded', 'grade-failed', 'cancel', 'closed']),
   asking: new Set(['answered-ask', 'ask-failed', 'cancel', 'closed']),
-  summary: new Set(['next', 'pick-focus', 'loading', 'closed']),
-  error: new Set(['loading', 'pick-focus', 'closed']),
+  summary: new Set(['next', 'pick-focus', 'loading', 'closed', 'cards-open']),
+  error: new Set(['loading', 'pick-focus', 'closed', 'cards-open']),
+  cards: new Set(['flip', 'rate', 'cards-end', 'cancel', 'closed']),
+  'cards-done': new Set(['cards-open', 'loading', 'cancel', 'closed']),
 }
 
 describe('tutor round', () => {
@@ -417,7 +426,27 @@ describe('tutor round', () => {
     expect(tutorStartRefusal(STATES.question)).toBe('Finish or end this round first.')
     expect(tutorStartRefusal(STATES.feedback)).toBe(TUTOR_REFUSALS.mid)
     // Screens between rounds take a start, and the reducer decides the rest.
-    for (const phase of ['closed', 'consent', 'home', 'summary', 'error'] as const) expect(tutorStartRefusal(STATES[phase])).toBeUndefined()
+    for (const phase of ['closed', 'consent', 'home', 'summary', 'error', 'cards-done'] as const) expect(tutorStartRefusal(STATES[phase])).toBeUndefined()
+    // Flipping cards is not cut short by a round; a finished session takes one.
+    expect(tutorStartRefusal(STATES.cards)).toBe('Finish or end the flashcards first.')
+  })
+
+  test('flashOpenRefusal turns flashcards away only from a call or a round on screen', async () => {
+    expect(flashOpenRefusal(STATES.loading)).toBe(TUTOR_REFUSALS.writing)
+    expect(flashOpenRefusal(STATES.grading)).toBe(TUTOR_REFUSALS.checking)
+    expect(flashOpenRefusal(STATES.asking)).toBe(TUTOR_REFUSALS.checking)
+    expect(flashOpenRefusal(STATES.question)).toBe(TUTOR_REFUSALS.mid)
+    expect(flashOpenRefusal(STATES.feedback)).toBe(TUTOR_REFUSALS.mid)
+    // Consent is not needed: nothing is sent.
+    for (const phase of ['closed', 'consent', 'home', 'summary', 'error', 'cards', 'cards-done'] as const) expect(flashOpenRefusal(STATES[phase])).toBeUndefined()
+  })
+
+  test('a finished flashcard session starts a round or a review like the summary', async () => {
+    const done = STATES['cards-done']
+    expect(applyTutor(done, { kind: 'loading', epoch: 9, focus: 'turn', source: 'digest', at: 5 })).toEqual({ phase: 'loading', epoch: 9, focus: 'turn', source: 'digest', since: 5 })
+    const review = round(FIVE, { source: 'review' })
+    expect(applyTutor(done, { kind: 'loaded', round: review })).toEqual({ phase: 'question', round: review })
+    expect(applyTutor(done, { kind: 'loaded', round: round([], { source: 'review' }) })).toBe(done)
   })
 
   test('describeFailure words every failure', async () => {

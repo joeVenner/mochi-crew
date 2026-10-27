@@ -187,7 +187,7 @@ const parseProject = (raw: unknown): TutorProject | null => {
 }
 
 /** Appends topics, moving a repeat to the end, and keeps the newest `max`. */
-const keepLast = (topics: readonly string[], max: number): readonly string[] => {
+export const keepLast = (topics: readonly string[], max: number): readonly string[] => {
   const unique = topics.filter((topic, index) => topics.lastIndexOf(topic) === index)
   return unique.slice(Math.max(0, unique.length - max))
 }
@@ -205,7 +205,7 @@ const byDueRound = (deck: readonly TutorCard[]): readonly TutorCard[] => [...dec
  * (this round's misses) go only once nothing else is left: a brand-new miss is due soonest, so a
  * due-round rule alone would drop exactly the card the round just earned.
  */
-const capDeck = (deck: readonly TutorCard[], keep: ReadonlySet<string> = new Set()): readonly TutorCard[] => {
+export const capDeck = (deck: readonly TutorCard[], keep: ReadonlySet<string> = new Set()): readonly TutorCard[] => {
   const sorted = byDueRound(deck)
   const excess = sorted.length - MAX_DECK
   if (excess <= 0) return sorted
@@ -293,7 +293,7 @@ export const nextLevel = (project: TutorProject, round: TutorRound): { readonly 
 const clampLevel = (level: number): TutorLevel => (level <= 1 ? 1 : level >= 3 ? 3 : 2)
 
 /** A question as stored on a card: the replay marker is dropped so the card stays canonical. */
-const storedQuestion = (question: TutorQuestion): TutorQuestion => {
+export const storedQuestion = (question: TutorQuestion): TutorQuestion => {
   if (question.isReview === undefined) return question
   const { isReview: _replayed, ...rest } = question
   return rest

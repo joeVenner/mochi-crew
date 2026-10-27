@@ -62,7 +62,7 @@ const ctx = (over: Partial<TutorViewContext> = {}): TutorViewContext => ({
   canFork: true,
   planText: { text: 'session · warm (2m idle)', isWarning: false },
   project: FRESH_PROJECT,
-  session: { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false },
+  session: { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false, flashXp: 0 },
   hasContent: true,
   canOpenFile: () => false,
   model: 'haiku',
@@ -232,7 +232,7 @@ describe('tutor view', () => {
   test('home shows this session spend once anything was spent', async () => {
     const home: TutorState = { phase: 'home', focus: 'recent', isDigestOnly: false }
     expect(rowKeyed(tutorScreen(home, ctx()), 'spent')).toBe(undefined)
-    const session = { rounds: 2, usage: { calls: 2, input: 9_000, cacheRead: 151_000, cacheWrite: 800, output: 2_100 }, isForkSuspect: false }
+    const session = { rounds: 2, usage: { calls: 2, input: 9_000, cacheRead: 151_000, cacheWrite: 800, output: 2_100 }, isForkSuspect: false, flashXp: 0 }
     expect(textOf(rowKeyed(tutorScreen(home, ctx({ session })), 'spent'))).toBe('this session  2 rounds · 9.8k in · 151k cached · 2.1k out')
   })
 
