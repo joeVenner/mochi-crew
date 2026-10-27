@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-27
+
 ### Added
 
 - Mochi Tutor: press `q` in the pane (or run `/mochi tutor`) for a quiz tab where Mochi asks you
