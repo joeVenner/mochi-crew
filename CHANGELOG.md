@@ -7,6 +7,32 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Mochi Tutor: press `q` in the pane (or run `/mochi tutor`) for a quiz tab where Mochi asks you
+  about this project and Claude's recent changes, so you understand the code you ship. Pick recent
+  changes, the last turn or the big picture. Rounds mix multiple-choice questions, with a reason for
+  every option, and questions you answer in your own words and get checked, plus hints, up to two
+  follow-up questions each, and a summary that says what to read next. Missed questions come back
+  in later rounds, answers earn Mochi's XP, and a tutor level adapts per project. A round reuses
+  the session's own conversation while Claude is working or within 5 minutes of its last reply,
+  when the prompt cache is surely warm; otherwise a capped digest goes to `tutorModel` (haiku by
+  default, or sonnet or opus). `tutorContext` (`auto`, `digest` or `session`) changes that in
+  `/config`. `/mochi tutor start`, `digest`, `review`, `stop` and `reset` work from the prompt.
+
+### Changed
+
+- Privacy: the tutor is the first feature that sends data to a model. It runs only when you press,
+  shows a first-use notice, and the README's Privacy section now says exactly what it sends.
+
+### Security
+
+- Tutor requests leave `.env`, key, certificate, secret- and credential-named, Terraform state,
+  lock and minified files out of every git call through pathspec and never read new files that match the same rules. The digest, grading and
+  follow-ups never include tool output or command text, and everything Mochi adds to a request,
+  typed answers included, has private-key blocks and secret-looking text masked before sending.
+  Model replies are drawn as plain text with control characters removed.
+
 ## [1.7.0] - 2026-10-22
 
 ### Added
