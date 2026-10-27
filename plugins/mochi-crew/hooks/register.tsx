@@ -33,10 +33,11 @@ import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit,
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
 import type { Digest, TranscriptRow } from './tutorDigest'
-import { buildDigest, capGitOutput, diffArgs, isReadableNewFile, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
-import { excerptLookup, ownExcerpt } from './tutorCode'
+import { buildDigest, capGitOutput, codeExcerpts, diffArgs, isReadableNewFile, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
+import type { CodeLookup } from './tutorCode'
+import { NO_CODE, excerptLookup, ownExcerpt } from './tutorCode'
 import type { ParseOutcome } from './tutorParse'
-import { cleanModelText, parseGrade, parseRound } from './tutorParse'
+import { anchoredFiles, cleanModelText, parseGrade, parseRound } from './tutorParse'
 import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
 import { DEFAULT_TUTOR_CONFIG, afterDigest, afterFork, choosePlan, isForkMiss, parseTutorConfig, planLabel, wasForkMiss } from './tutorPlan'
 import { askRequest, digestRequest, forkPrompt, gradeRequest } from './tutorPrompt'
@@ -1461,6 +1462,19 @@ const readNewFiles = async ($: EngineInterface, root: string, touched: readonly 
 const tutorGit = async ($: EngineInterface, root: string, args: readonly string[]): Promise<string | undefined> =>
   capGitOutput(await gitOutput($, root, args, TUTOR_GIT_MS))
 
+/**
+ * The first of a hardened diff's two steps: the paths whose old and new names are both safe,
+ * from a repository-wide listing with renames found. None when git fails.
+ */
+const planChanges = async ($: EngineInterface, root: string, touched: readonly TouchedFile[], added: Readonly<Record<string, number>>): Promise<DiffPlan> => {
+  const [prefix, listed] = await Promise.all([
+    tutorGit($, root, ['rev-parse', '--show-prefix']),
+    tutorGit($, root, nameStatusArgs()),
+  ])
+  if (prefix === undefined || listed === undefined) return { paths: [], blocked: 0, omitted: 0 }
+  return planDiff(listed, prefix.replace(/\n$/, ''), touched, added)
+}
+
 /** The uncommitted changes a digest may show, read in two steps; each part is absent when git fails. */
 type DigestChanges = { readonly plan: DiffPlan; readonly numstat?: string; readonly diff?: string }
 
@@ -1470,13 +1484,7 @@ type DigestChanges = { readonly plan: DiffPlan; readonly numstat?: string; reado
  * would let `git mv .env config.txt` through, since pathspecs apply before rename detection.
  */
 const readChanges = async ($: EngineInterface, root: string, touched: readonly TouchedFile[], added: Readonly<Record<string, number>>): Promise<DigestChanges> => {
-  const [prefix, listed] = await Promise.all([
-    tutorGit($, root, ['rev-parse', '--show-prefix']),
-    tutorGit($, root, nameStatusArgs()),
-  ])
-  const none: DiffPlan = { paths: [], blocked: 0, omitted: 0 }
-  if (prefix === undefined || listed === undefined) return { plan: none }
-  const plan = planDiff(listed, prefix.replace(/\n$/, ''), touched, added)
+  const plan = await planChanges($, root, touched, added)
   if (plan.blocked > 0 || plan.omitted > 0) {
     $.ui.log(`mochi-crew: tutor digest left out ${plan.blocked} secret-shaped and ${plan.omitted} extra changed files`, { to: 'debug' })
   }
@@ -1513,6 +1521,25 @@ const gatherDigest = async ($: EngineInterface, root: string, focus: TutorFocus,
     added: snapshot?.added ?? {},
     plan,
   })
+}
+
+/**
+ * The hunks a fork round's anchors may draw (B.3): one local diff of just the anchored files,
+ * read in the digest's two steps and masked as it masks; nothing of it is sent. A failure, or a
+ * round stopped before the diff, leaves every anchor unresolved rather than costing the round.
+ */
+const readForkCode = async ($: EngineInterface, root: string, anchored: readonly string[], touched: readonly TouchedFile[], epoch: number): Promise<CodeLookup> => {
+  if (anchored.length === 0) return NO_CODE
+  try {
+    const plan = await planChanges($, root, touched, {})
+    const paths = plan.paths.filter(path => anchored.includes(path))
+    if (paths.length === 0 || !(await isLiveCall($, epoch))) return NO_CODE
+    const diff = await tutorGit($, root, diffArgs(paths))
+    return diff === undefined ? NO_CODE : excerptLookup(codeExcerpts(diff, paths))
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor could not read a fork round's code: ${String(error)}`, { to: 'debug' })
+    return NO_CODE
+  }
 }
 
 /** What a start asked for: the round's first epoch, its focus and plan, the learner it is pitched at. */
@@ -1592,7 +1619,10 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder, hold: Round
       const next = afterFork(waited.result)
       if (next.kind === 'error') return fail(next.failure, true)
       if (next.kind === 'parse') {
-        const parsed = parseRound(next.text, roundId(), new Set(files), ctx.count, hold.epoch)
+        // Only files the reply anchors to, all touched in this checkout, are diffed; the spinner keeps turning meanwhile.
+        const lookup = await readForkCode($, root, anchoredFiles(next.text, new Set(files)), touched, hold.epoch)
+        if (!(await isLiveCall($, hold.epoch))) return dropStale($)
+        const parsed = parseRound(next.text, roundId(), new Set(files), ctx.count, hold.epoch, lookup)
         if (parsed.isValid) return show('fork', parsed.questions)
         logInvalid($, parsed)
       }

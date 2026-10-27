@@ -1827,4 +1827,173 @@ describe('tutor code cards', () => {
     await shows(ui, 'q 1/4')
     await ui.unmount()
   })
+
+  /** Lets the session's edits run; registered, as every hook beneath the plugins is, before the session starts. */
+  const allowEdits = (on: On) => on('tool.call', { tool: 'Edit' }, () => ({ result: {} as never, text: 'edited' }))
+  /** The session edited hooks/tutor.ts in its own checkout, so a fork round may anchor to it. */
+  const touchTutorFile = async ($: $) => {
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/tutor.ts', old_string: 'a', new_string: 'b' })
+  }
+  const codeDiffs = (gitCalls: readonly (readonly string[])[]) => gitCalls.filter(args => args[0] === 'diff' && args.includes('-U2'))
+
+  for (const surface of SURFACES) {
+    test(`a fork round attaches code from one local diff and makes no extra model call (${surface})`, async ($, on) => {
+      mock.clock(on)
+      allowEdits(on)
+      const { record } = engine(on, { saved: { tutorConsent: 2 }, git: CHANGED, forks: [reply(codeQuiz([anchoredQ, lineQ, choiceQ(1), choiceQ(2), explainQ]))] })
+      await start($)
+      await touchTutorFile($)
+      await warmUp($)
+      const ui = await tutorTab($, surface)
+      await ui.press({ key: 'start:recent' })
+      await shows(ui, FIRST_STEM)
+      const source = String((await ui.find({ type: 'Code' }))?.props.source ?? '')
+      expect(source).toContain(' export const one = 1')
+      expect(source).toContain('+const API_KEY=')
+      expect(source).not.toContain('sk-test-123456789abcdef')
+      // One fork, no completion; one diff, by literal path, of the anchored file only.
+      expect(record.modelCalls).toBe(1)
+      expect(record.completeRequests).toHaveLength(0)
+      const diffs = codeDiffs(record.gitCalls)
+      expect(diffs).toHaveLength(1)
+      expect(diffs[0]).toContain(':(literal)hooks/tutor.ts')
+      expect(diffs[0]).toContain('--no-textconv')
+      // No numstat for the round: the file tree's own reads are of the whole folder.
+      expect(record.gitCalls.some(args => args.includes('--numstat') && args.some(arg => arg.startsWith(':(literal)')))).toBe(false)
+      // The local diff only drew the card: the fork's prompt went out before it was read.
+      expect(record.forkPrompts[0] ?? '').not.toContain('export const capped')
+      await ui.press({ key: (await ui.find({ type: 'Button', text: 'right answer' }))?.key ?? '' })
+      await ui.press({ key: 'next' })
+      await shows(ui, LINE_STEM)
+      await ui.press({ key: (await ui.find({ type: 'Button', text: /^L3 +export const capped/ }))?.key ?? '' })
+      await shows(ui, '✓ right')
+      expect(record.modelCalls).toBe(1)
+      await ui.unmount()
+    })
+  }
+
+  test('a fork round never diffs a file renamed from .env, and its anchors go without cards', async ($, on) => {
+    mock.clock(on)
+    allowEdits(on)
+    const { record } = engine(on, {
+      saved: { tutorConsent: 2 },
+      git: { ...CHANGED, 'name-status': 'R100\0.env\0hooks/tutor.ts\0' },
+      forks: [reply(codeQuiz([anchoredQ, lineQ, choiceQ(1), choiceQ(2), explainQ]))],
+    })
+    await start($)
+    await touchTutorFile($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    expect(codeDiffs(record.gitCalls)).toEqual([])
+    expect(await ui.find({ type: 'Code' })).toBeUndefined()
+    // The line question had no card to point into, so it was dropped.
+    await shows(ui, 'q 1/4')
+    await ui.unmount()
+  })
+
+  test('a fork round whose diff fails keeps its questions without cards', async ($, on) => {
+    mock.clock(on)
+    const { diff: _diff, ...noDiff } = CHANGED
+    allowEdits(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: noDiff, forks: [reply(codeQuiz([anchoredQ, choiceQ(1), choiceQ(2), explainQ]))] })
+    await start($)
+    await touchTutorFile($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    expect(codeDiffs(record.gitCalls)).toHaveLength(1)
+    expect(await ui.find({ type: 'Code' })).toBeUndefined()
+    expect(record.modelCalls).toBe(1)
+    await ui.unmount()
+  })
+
+  test('a fork round anchored to a file the session never touched reads no diff', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: CHANGED, forks: [reply(codeQuiz([anchoredQ, choiceQ(1), choiceQ(2), explainQ]))] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    // The file tree's own status reads aside, nothing is listed or diffed for the round.
+    expect(record.gitCalls.some(args => args.includes('--name-status'))).toBe(false)
+    expect(codeDiffs(record.gitCalls)).toEqual([])
+    expect(await ui.find({ type: 'Code' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('x while a fork round reads its code drops the round and runs no diff', async ($, on) => {
+    const clock = mock.clock(on)
+    allowEdits(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: CHANGED, forks: [reply(codeQuiz([anchoredQ, lineQ, choiceQ(1), choiceQ(2), explainQ]))], clock })
+    await start($)
+    await touchTutorFile($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    record.gitDelay = 1_000
+    await ui.press({ key: 'start:recent' })
+    // The log read, then the fork answered; the rename check is under way.
+    await clock.advance(1_500)
+    expect(record.forkPrompts).toHaveLength(1)
+    await ui.press({ key: 'cancel' })
+    await clock.advance(10_000)
+    // The rename check finished after x, and the diff after it never ran.
+    expect(record.gitCalls.some(args => args.includes('--name-status'))).toBe(true)
+    expect(codeDiffs(record.gitCalls)).toEqual([])
+    expect(record.logs).toContain('mochi-crew: tutor dropped a stale reply')
+    await shows(ui, HOME)
+    await lacks(ui, FIRST_STEM)
+    expect(record.modelCalls).toBe(1)
+    await ui.unmount()
+  })
+
+  test('a fork round stopped during its diff drops the diff and the round', async ($, on) => {
+    const clock = mock.clock(on)
+    allowEdits(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: CHANGED, forks: [reply(codeQuiz([anchoredQ, lineQ, choiceQ(1), choiceQ(2), explainQ]))], clock })
+    await start($)
+    await touchTutorFile($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    record.gitDelay = 1_000
+    await ui.press({ key: 'start:recent' })
+    // Log, then the rename check, then the diff itself is under way (each git call answers after its delay).
+    await clock.advance(2_500)
+    await ui.press({ key: 'cancel' })
+    await clock.advance(10_000)
+    expect(codeDiffs(record.gitCalls)).toHaveLength(1)
+    expect(record.logs).toContain('mochi-crew: tutor dropped a stale reply')
+    await shows(ui, HOME)
+    await lacks(ui, FIRST_STEM)
+    expect(record.modelCalls).toBe(1)
+    await ui.unmount()
+  })
+
+  test('a follow-up on a fork round\'s code card sends none of the local diff', async ($, on) => {
+    mock.clock(on)
+    allowEdits(on)
+    const { record } = engine(on, {
+      saved: { tutorConsent: 2 },
+      git: CHANGED,
+      forks: [reply(codeQuiz([anchoredQ, choiceQ(1), choiceQ(2), explainQ]))],
+      completes: [reply(ASK_REPLY, ASK_CALL)],
+    })
+    await start($)
+    await touchTutorFile($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    expect(await ui.find({ type: 'Code' })).toBeDefined()
+    await ui.press({ key: (await ui.find({ type: 'Button', text: 'right answer' }))?.key ?? '' })
+    await ui.input({ key: await fieldKey(ui), text: 'what does this line do?' })
+    await shows(ui, ASK_REPLY)
+    const prompt = record.completeRequests[0]?.prompt ?? ''
+    expect(prompt).toContain('what does this line do?')
+    for (const drawn of ['export const capped', 'API_KEY', 'export const two', '@@ -1,2 +1,5 @@', '<data kind="excerpt">']) expect(prompt).not.toContain(drawn)
+    await ui.unmount()
+  })
 })
