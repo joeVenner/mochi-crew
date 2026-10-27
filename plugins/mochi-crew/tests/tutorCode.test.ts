@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { CODE_LINE_MAX, CODE_MAX_CHARS, CODE_WINDOW, NO_CODE, codeLine, codeNumbers, codeWindow, findQuote, isCodeDiff, lineCode, parseHunks, quoteCode, shownNumber } from '../hooks/tutorCode'
+import { CODE_LINE_MAX, CODE_MAX_CHARS, CODE_WINDOW, NO_CODE, codeLine, codeNumbers, codeWindow, excerptLookup, findQuote, isCodeDiff, lineCode, ownExcerpt, parseHunks, quoteCode, shownNumber } from '../hooks/tutorCode'
 import type { Hunk } from '../hooks/tutorCode'
 
 const EXCERPT = [
@@ -204,5 +204,21 @@ describe('tutor code', () => {
     expect(codeNumbers('nothing')).toEqual([])
     expect(codeNumbers('@@ -1,1 +1,1 @@\n a\n@@ -3,1 +3,1 @@\n b')).toEqual([])
     expect(codeNumbers('@@ -3,1 +3,2 @@\n-a\n+b\n+c')).toEqual([3, 3, 4])
+  })
+
+  test('excerptLookup reads a file\'s own excerpt only', async () => {
+    const excerpts = { 'src/a.ts': EXCERPT, 'notes.md': 'plain text, no hunk' }
+    const lookup = excerptLookup(excerpts)
+    expect(lookup('src/a.ts')).toHaveLength(2)
+    expect(lookup('src/a.ts')).toEqual(parseHunks(EXCERPT))
+    // A new file's plain excerpt, and a file with none, have no hunks.
+    expect(lookup('notes.md')).toEqual([])
+    expect(lookup('src/b.ts')).toEqual([])
+    // Names an Object has on its prototype read nothing.
+    for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect(ownExcerpt(excerpts, name)).toBe(undefined)
+      expect(lookup(name)).toEqual([])
+    }
+    expect(excerptLookup({})('src/a.ts')).toEqual([])
   })
 })
