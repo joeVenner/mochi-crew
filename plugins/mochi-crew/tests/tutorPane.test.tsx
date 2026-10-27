@@ -1594,4 +1594,22 @@ describe('tutor races', () => {
     expect(await probe($, 'tutorSession')).toMatchObject({ usage: { calls: 0 }, isForkSuspect: false })
     await ui.unmount()
   })
+
+  test('stopping a fork that never answers lets its round go', async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 1_000_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, 'Mochi is reading the chat…')
+    await ui.press({ key: 'cancel' })
+    await clock.settle()
+    // The round stopped waiting at once, though the fork has not answered.
+    expect(record.logs).toContain('mochi-crew: tutor dropped a stale reply')
+    expect(record.completeRequests).toHaveLength(0)
+    await clock.advance(1_000_000)
+    await shows(ui, HOME)
+    await ui.unmount()
+  })
 })

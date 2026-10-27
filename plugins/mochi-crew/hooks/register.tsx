@@ -1108,10 +1108,11 @@ let tutorEpoch = 0
 // Bumped at session end: a call counts its spend only for the conversation it was sent in, so a
 // reply landing after a /clear never adds to the next one's total or latches its digest.
 let tutorGeneration = 0
-// The digest call's abort, the fork's watchdog and the loading spinner of the round in flight.
-// A continuation releases only the one it armed, so a stale one never stops a newer round's.
+// The digest call's abort, the stop of the fork's wait (its watchdog, and the wait let go) and
+// the loading spinner of the round in flight. A continuation releases only the one it armed, so
+// a stale one never stops a newer round's.
 let tutorAbort: AbortController | undefined
-let tutorWatchdog: Timer | undefined
+let tutorForkStop: (() => void) | undefined
 let tutorSpinner: Timer | undefined
 // The digest the round on screen was written from (its excerpts back follow-ups); null on a fork.
 let tutorDigest: Digest | null = null
@@ -1270,13 +1271,14 @@ const closeTutor = async ($: EngineInterface, kind: 'declined' | 'closed'): Prom
 
 /**
  * Stops what can be stopped of a call in flight: the digest's, grade's or follow-up's request,
- * the fork's watchdog, the spinner. Its reply is already stale once the screen moved on.
+ * the wait on a fork (which has no signal), the spinner. Its reply is already stale once the
+ * screen moved on.
  */
 const abortTutorCalls = (): void => {
   tutorAbort?.abort()
   tutorAbort = undefined
-  tutorWatchdog?.cancel()
-  tutorWatchdog = undefined
+  tutorForkStop?.()
+  tutorForkStop = undefined
   tutorSpinner?.cancel()
   tutorSpinner = undefined
 }
@@ -1360,7 +1362,12 @@ const runFork = async ($: EngineInterface, prompt: string): Promise<ForkWait> =>
   })
   // A timer, not a sleep: a sleep would spend the hook's own budget.
   const watchdog = $.clock.after(FORK_WAIT_MS, () => stopWaiting({ kind: 'late' }))
-  tutorWatchdog = watchdog
+  // A stop lets the wait go at once too: a fork that never settles would hold its round forever.
+  const stop = (): void => {
+    watchdog.cancel()
+    stopWaiting({ kind: 'late' })
+  }
+  tutorForkStop = stop
   try {
     const first = await Promise.race([forked, late])
     if (first.kind === 'result') {
@@ -1373,7 +1380,7 @@ const runFork = async ($: EngineInterface, prompt: string): Promise<ForkWait> =>
     return first
   } finally {
     watchdog.cancel()
-    if (tutorWatchdog === watchdog) tutorWatchdog = undefined
+    if (tutorForkStop === stop) tutorForkStop = undefined
   }
 }
 
