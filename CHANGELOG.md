@@ -7,6 +7,47 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-27
+
+### Added
+
+- Mochi Tutor: press `q` in the pane (or run `/mochi tutor`) for a quiz tab where Mochi asks you
+  about this project and Claude's recent changes, so you understand the code you ship. Pick recent
+  changes, the last turn or the big picture. Rounds mix multiple-choice questions, with a reason for
+  every option, and questions you answer in your own words and get checked, plus hints, up to two
+  follow-up questions each, and a summary that says what to read next. Missed questions come back
+  in later rounds, answers earn Mochi's XP, and a tutor level adapts per project. A round reuses
+  the session's own conversation while Claude is working or within 5 minutes of its last reply,
+  when the prompt cache is surely warm; otherwise a capped digest goes to `tutorModel` (haiku by
+  default, or sonnet or opus). `tutorContext` (`auto`, `digest` or `session`) changes that in
+  `/config`. `/mochi tutor start`, `digest`, `review`, `stop` and `reset` work from the prompt.
+
+### Changed
+
+- Privacy: the tutor is the first feature that sends data to a model. It runs only when you press,
+  and a first-use notice says what a round sends: all uncommitted changes in the folder, removed
+  lines included, with Claude's files first. One yes covers every project, `/mochi tutor reset`
+  takes it back along with the project's progress, and the notice asks again when an update
+  changes what it describes. The README's Privacy section says exactly what is sent.
+- The HUD's secret masking also covers spaced and YAML `name: value` secrets, `name = value`
+  assignments, and Stripe and Google keys. File and branch names in the tree, and tutor text, have
+  zero-width, direction-mark and tag characters replaced as well as control characters.
+
+### Security
+
+- Tutor digests never diff or read files meant for secrets: `.env*`, keys, certificates and key
+  stores, secret- and credential-named files, Terraform state and variables, `.npmrc`, `.netrc`,
+  `.pgpass`, `.pypirc`, Docker and Kubernetes logins, `.aws/`, `.ssh/`, `.gnupg/` and more, plus lock
+  and minified files. Changes are listed first with rename and copy detection, and only paths whose
+  old and new names both pass are diffed, by literal path, so `git mv .env notes.txt` stays out. A
+  new file is read only when it is a regular file, not a link, at most 200 KB and inside the
+  project. Tutor git output is capped at 1 MB, and diff prefixes are fixed whatever your git
+  config says.
+- Everything Mochi adds to a request, typed answers included, has private-key blocks removed and
+  common secret patterns masked, diff lines and file names too. Masking works by pattern and can
+  miss an unusual secret. The digest, grading and follow-ups never include tool output or command
+  text, and model replies are drawn as plain text with control and invisible characters replaced.
+
 ## [1.7.0] - 2026-10-22
 
 ### Added

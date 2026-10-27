@@ -19,7 +19,9 @@ export const visibleBug = (bug: Bug | null, now: number): Bug | null =>
 
 export const isBugAlive = (bug: Bug | null): boolean => bug !== null && bug.squashedAt === undefined
 
-export type QuipEvent = 'bug' | 'squash' | 'hire' | 'level' | 'achievement' | 'pet' | 'feed' | 'wake' | 'tests' | 'shipped' | 'mission'
+export type QuipEvent =
+  | 'bug' | 'squash' | 'hire' | 'level' | 'achievement' | 'pet' | 'feed' | 'wake' | 'tests' | 'shipped' | 'mission'
+  | 'tutor-start' | 'tutor-right' | 'tutor-wrong' | 'tutor-done' | 'tutor-perfect'
 
 const QUIPS: Readonly<Record<QuipEvent, readonly string[]>> = {
   // Calm, short, no exclamation marks: Mochi talks like a colleague, not a cereal box.
@@ -34,6 +36,12 @@ const QUIPS: Readonly<Record<QuipEvent, readonly string[]>> = {
   tests: ['Tests pass.', 'All green.'],
   shipped: ['Shipped.', 'Another change landed.'],
   mission: ['Mission done: {}.', 'Checked off: {}.'],
+  // Tutor lines are fixed local text: model output never reaches a quip. `tutor-done` gets the score, e.g. "3/5".
+  'tutor-start': ['Quiz time.', 'Let’s see what stuck.'],
+  'tutor-right': ['Right.', 'You know this one.', 'Exactly.'],
+  'tutor-wrong': ['Close. Read the why.', 'That one’s tricky.'],
+  'tutor-done': ['{} right. Nice work.', 'Round done: {}.'],
+  'tutor-perfect': ['Perfect round.', 'You really know this code.'],
 }
 
 /**

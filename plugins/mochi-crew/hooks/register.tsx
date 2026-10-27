@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, HookFailure, ModelCompleteRequest, ModelCompleteResult, ModelForkResult, ModelUsage, Register, RenderSurface, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput, UiPane } from 'claude-code'
 
-import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
+import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, TutorFailure, TutorFocus, TutorProject, TutorQuestion, TutorRound, TutorSession, TutorState, TutorUsage, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
 import { placeFor } from './badgePalette'
@@ -24,6 +24,7 @@ import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyComplete
 import type { Mission } from './missions'
 import { safeDetail } from './redact'
 import { activityLabel, fileName, gadgetForCommand, mcpToolLabel, workerDoing, workerNote } from './mascot'
+import type { TutorVerb } from './outfits'
 import { DEFAULT_OUTFIT, OUTFIT_NAMES, isOutfitName, parseMascotCommand } from './outfits'
 import { ROLE_INFO, roleFor } from './roles'
 import type { SceneInput } from './sprite'
@@ -31,6 +32,18 @@ import { DONE_MS, SCENE_ROWS, cellsFor } from './sprite'
 import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit, noteGreenTests, settleTurn } from './progress'
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
+import type { Digest, TranscriptRow } from './tutorDigest'
+import { buildDigest, capGitOutput, diffArgs, isReadableNewFile, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
+import type { ParseOutcome } from './tutorParse'
+import { cleanModelText, parseGrade, parseRound } from './tutorParse'
+import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
+import { DEFAULT_TUTOR_CONFIG, afterDigest, afterFork, choosePlan, isForkMiss, parseTutorConfig, planLabel, wasForkMiss } from './tutorPlan'
+import { askRequest, digestRequest, forkPrompt, gradeRequest } from './tutorPrompt'
+import { FRESH_PROJECT, afterRound, dueCards, parseProgress, projectOf, withProject } from './tutorProgress'
+import type { TutorEvent } from './tutorRound'
+import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview, tutorStartRefusal, verdictOf } from './tutorRound'
+import type { TutorAction, TutorControl, TutorInputRow, TutorRow, TutorTone, TutorViewContext } from './tutorView'
+import { tutorHudLabel, tutorScreen } from './tutorView'
 import type { ProviderEnv, TtlEnv } from './meter'
 import { EMPTY_CACHE, addUsage, certainlyColdAfterMs, describeFailure, detectProvider, isCacheUnreported, isCertainlyCold, settleProvider } from './meter'
 import type { Alert } from './meterAlerts'
@@ -68,7 +81,13 @@ const POLL_EVERY_TICKS = 6
 const MAX_STEP_FAILURES = 20
 
 /** Keys in $.store, which outlives the session. */
-const STORE = { stats: 'stats', outfit: 'outfit', isSoundOn: 'isSoundOn', care: 'care', achievements: 'achievements', isTreeOn: 'treeOn' } as const
+const STORE = {
+  stats: 'stats', outfit: 'outfit', isSoundOn: 'isSoundOn', care: 'care', achievements: 'achievements', isTreeOn: 'treeOn',
+  // A number: the tutor notice's version the person accepted.
+  tutorConsent: 'tutorConsent',
+  // A TutorProgressStore, keyed by project root and capped well under the store's budget.
+  tutorProgress: 'tutorProgress',
+} as const
 
 const SOUNDS = { done: 'sounds/done.wav', levelUp: 'sounds/levelup.wav', join: 'sounds/join.wav' } as const
 type Sound = (typeof SOUNDS)[keyof typeof SOUNDS]
@@ -214,19 +233,21 @@ const saveStats = async ($: EngineInterface, change: (score: CrewStats) => CrewS
   return after
 }
 
+/** A value earlier sessions saved, or undefined when the store cannot read it (logged). */
+const readSaved = ($: EngineInterface, key: string): Promise<unknown> =>
+  $.store.get(key).catch((error: unknown) => {
+    $.ui.log(`mochi-crew: could not read saved ${key}: ${String(error)}`, { to: 'debug' })
+    return undefined
+  })
+
 /** Restores what earlier sessions saved; anything malformed falls back to defaults. */
 const loadSaved = async ($: EngineInterface): Promise<void> => {
-  const readSaved = (key: string): Promise<unknown> =>
-    $.store.get(key).catch((error: unknown) => {
-      $.ui.log(`mochi-crew: could not read saved ${key}: ${String(error)}`, { to: 'debug' })
-      return undefined
-    })
-  const savedStats = parseStats(await readSaved(STORE.stats))
-  const savedOutfit = await readSaved(STORE.outfit)
-  const savedSound = await readSaved(STORE.isSoundOn)
-  const savedCare = await readSaved(STORE.care)
-  const savedAchievements = await readSaved(STORE.achievements)
-  const savedTreeOn = await readSaved(STORE.isTreeOn)
+  const savedStats = parseStats(await readSaved($, STORE.stats))
+  const savedOutfit = await readSaved($, STORE.outfit)
+  const savedSound = await readSaved($, STORE.isSoundOn)
+  const savedCare = await readSaved($, STORE.care)
+  const savedAchievements = await readSaved($, STORE.achievements)
+  const savedTreeOn = await readSaved($, STORE.isTreeOn)
   await update($, stats, (): CrewStats => savedStats)
   // Start the idle clock now, so Mochi does not wake up already asleep.
   const now = await $.clock.now()
@@ -432,10 +453,11 @@ const cyclePlace = ($: EngineInterface): Promise<string> => runBadgeCommand($, '
 const toggleSound = async ($: EngineInterface): Promise<string> =>
   runMascotCommand($, (await read($, isSoundOn)) ? 'sound off' : 'sound on')
 
-/** Runs a pane button's action; its answer shows as a toast. */
-const pressButton = async ($: EngineInterface, action: () => Promise<string>): Promise<void> => {
+/** Runs a pane button's action; its answer shows as a toast, and null shows none. */
+const pressButton = async ($: EngineInterface, action: () => Promise<string | null>): Promise<void> => {
   try {
-    $.ui.toast(await action())
+    const answer = await action()
+    if (answer !== null) $.ui.toast(answer)
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: button failed: ${String(error)}`, { to: 'debug' })
   }
@@ -820,6 +842,8 @@ const runMascotCommand = async ($: EngineInterface, args: string): Promise<strin
         ? `File tree ${isOn ? 'on' : 'off'}.`
         : `File tree ${isOn ? 'on' : 'off'} (could not save it for next time).`
     }
+    case 'tutor':
+      return runTutorCommand($, command.action)
     case 'error':
       return command.message
   }
@@ -838,6 +862,9 @@ const UNKNOWN_PROVIDER: Provider = 'unknown'
 const meterMeasure = atom({ plugin: 'mochi-crew', key: 'meterMeasure' } as const, NO_MEASURE)
 const meterCache = atom({ plugin: 'mochi-crew', key: 'meterCache' } as const, EMPTY_CACHE)
 const meterModel = atom({ plugin: 'mochi-crew', key: 'meterModel' } as const, NO_MODEL)
+// The model as of the last main-thread turn: a model switched since then has its own cache, so
+// the tutor must not count on the chat's cache being warm.
+const meterResponseModel = atom({ plugin: 'mochi-crew', key: 'meterResponseModel' } as const, NO_MODEL)
 const meterProvider = atom({ plugin: 'mochi-crew', key: 'meterProvider' } as const, UNKNOWN_PROVIDER)
 const meterLastResponseAt = atom({ plugin: 'mochi-crew', key: 'meterLastResponseAt' } as const, NO_RESPONSE)
 const meterAlerts = atom({ plugin: 'mochi-crew', key: 'meterAlerts' } as const, NO_ALERTS)
@@ -907,6 +934,8 @@ const refreshModel = async ($: EngineInterface): Promise<void> => {
 const resetConversation = async ($: EngineInterface): Promise<void> => {
   await update($, meterCache, (): CacheTotals => EMPTY_CACHE)
   await update($, meterLastResponseAt, (): number | null => NO_RESPONSE)
+  await update($, meterResponseModel, (): string | null => NO_MODEL)
+  await update($, tutorSession, (): TutorSession => FRESH_TUTOR_SESSION)
   await update($, meterAlerts, (): readonly string[] => NO_ALERTS)
   await update($, meterMeasure, (): Measure | null => NO_MEASURE)
 }
@@ -1005,9 +1034,1032 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
     const usage = e.usage
     if (usage !== undefined) await update($, meterCache, totals => addUsage(totals, usage))
     await refreshModel($)
+    // Read back rather than taken from the turn's usage: the tutor compares it with `meterModel`,
+    // so both must be the same spelling of the id.
+    const answeredBy = await read($, meterModel)
+    await update($, meterResponseModel, (): string | null => answeredBy)
+    // Claude answered again, so a fork that missed the cache earlier says nothing about it now.
+    await update($, tutorSession, current => (current.isForkSuspect ? { ...current, isForkSuspect: false } : current))
     await raiseAlerts($)
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: meter could not count a turn: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+// ── Mochi Tutor ──────────────────────────────────────────────────────────────────────
+// A quiz tab on the project and on what Claude changed. The pure logic lives in tutor*.ts; the
+// wiring is here because the engine follows `$` only within the hooks module. The tab draws from
+// atoms only; every screen change happens in a handler, through `dispatchTutor`.
+
+const TUTOR_PANE = 'mochi-tutor'
+const TUTOR_TITLE = 'Tutor'
+/**
+ * The first-use notice's version: a stored consent below it shows the notice again. 2: the
+ * notice now says the digest sends every uncommitted change in the folder, not touched files only.
+ */
+const TUTOR_CONSENT_VERSION = 2
+/** At most this many due cards make one review round. */
+const REVIEW_ROUND_MAX = 5
+/** Text props for each tutor tone: the meter's, and green for a right answer. */
+const TUTOR_TONES: Readonly<Record<TutorTone, { color?: string; dimColor?: boolean; bold?: boolean }>> = {
+  ...METER_TONES,
+  good: { color: THEME.good },
+}
+// Opened from the main pane, the tab usually does not get the keys (the person holds them there).
+const TUTOR_UNFOCUSED = 'Tutor tab is open: press ctrl+x tab, or click it.'
+const TUTOR_UNPLACED = 'Tutor tab opened; widen the terminal to see it.'
+const TUTOR_TOO_SHORT = 'type an answer, or press r to see it'
+const TUTOR_ASK_FAILED = "Mochi couldn't answer that one."
+// Shown while the digest stands in for a fork that could not answer.
+const TUTOR_FALLBACK_NOTE = 'session unavailable, using the digest…'
+// A fork has no time limit of its own; past this the round stops waiting and asks the digest.
+const FORK_WAIT_MS = 60_000
+// A digest's git reads whole diffs, slower than the tree's status reads.
+const TUTOR_GIT_MS = 8_000
+const TUTOR_SPINNER_MS = 500
+// Transcript messages the digest may draw on, newest kept.
+const TUTOR_MESSAGES = 200
+// New files the digest shows, and how far into each it reads.
+const TUTOR_NEW_FILES = 2
+const TUTOR_NEW_FILE_LINES = 60
+
+const TUTOR_CLOSED: TutorState = { phase: 'closed' }
+const NO_TUTOR_PROJECT: TutorProject | null = null
+const FRESH_TUTOR_SESSION: TutorSession = { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false }
+const tutor = atom({ plugin: 'mochi-crew', key: 'tutor' } as const, TUTOR_CLOSED)
+const tutorConsent = atom({ plugin: 'mochi-crew', key: 'tutorConsent' } as const, 0)
+const tutorProject = atom({ plugin: 'mochi-crew', key: 'tutorProject' } as const, NO_TUTOR_PROJECT)
+const tutorSession = atom({ plugin: 'mochi-crew', key: 'tutorSession' } as const, FRESH_TUTOR_SESSION)
+
+// The `/config` pickers, read once per load: a change there reloads the module, which drops a
+// round in flight along with every other module variable.
+let tutorConfig: TutorConfig = DEFAULT_TUTOR_CONFIG
+// A `-p` run has no tab to quiz in. Set by each session.start.
+let isInteractive = true
+// Where the tab last drew (a module variable, not state, so drawing may write it): a handler
+// works out the screen it just caused, and so its focus key, without render props.
+let tutorViewport: { readonly surface: RenderSurface; readonly columns: number; readonly bodyRows: number } = { surface: 'terminal', columns: 44, bodyRows: 30 }
+// The last epoch handed out: each screen that waits on a call (and each round, as its shuffle
+// seed) takes the next one, inside the update that puts it up. Whether a reply still counts is
+// read off the screen (isLiveCall), never off this, so a stop needs no bump and a refused press
+// strands nothing.
+let tutorEpoch = 0
+// Bumped at session end: a call counts its spend only for the conversation it was sent in, so a
+// reply landing after a /clear never adds to the next one's total or latches its digest.
+let tutorGeneration = 0
+// The digest call's abort, the stop of the fork's wait (its watchdog, and the wait let go) and
+// the loading spinner of the round in flight. A continuation releases only the one it armed, so
+// a stale one never stops a newer round's.
+let tutorAbort: AbortController | undefined
+let tutorForkStop: (() => void) | undefined
+let tutorSpinner: Timer | undefined
+// The digest the round on screen was written from (its excerpts back follow-ups); null on a fork.
+let tutorDigest: Digest | null = null
+
+/** A round asked for before the notice was accepted, started once it is. */
+type TutorPending = { readonly focus: TutorFocus; readonly isDigestOnly: boolean }
+
+/** Everything the plan weighs, read from atoms: the tab's ctx line and a start read it alike, so the label names the source used. */
+const readPlanInput = async ($: EngineInterface, isDigestOnly: boolean, now: number): Promise<TutorPlanInput> => ({
+  config: tutorConfig,
+  isDigestOnly,
+  lastResponseAt: await read($, meterLastResponseAt),
+  now,
+  isWorking: isThinking(await read($, turn)),
+  ttl: ttlEnv,
+  contextTokens: (await read($, meterMeasure))?.tokens,
+  modelNow: await read($, meterModel),
+  modelAtResponse: await read($, meterResponseModel),
+  isForkSuspect: (await read($, tutorSession)).isForkSuspect,
+})
+
+/** Everything a tutor screen needs besides its state, read from atoms only (the tab draws from this). */
+const readTutorView = async ($: EngineInterface, state: TutorState): Promise<TutorViewContext> => {
+  const now = await $.clock.now()
+  const session = await read($, tutorSession)
+  const touched = await read($, treeTouched)
+  const snapshot = await read($, tree)
+  const input = await readPlanInput($, state.phase === 'home' && state.isDigestOnly, now)
+  const plan = choosePlan(input)
+  // Only a file the session itself touched in its own checkout may open: a model-named path never does.
+  const openable = new Set(touched.filter(file => file.worktree === undefined).map(file => file.path))
+  return {
+    ...tutorViewport,
+    now,
+    plan,
+    canFork: choosePlan({ ...input, isDigestOnly: false }).source === 'fork',
+    planText: planLabel(plan, tutorConfig.model),
+    project: (await read($, tutorProject)) ?? FRESH_PROJECT,
+    session,
+    hasContent: (await read($, journal)).turns > 0 || touched.length > 0 || Object.keys(snapshot?.marks ?? {}).length > 0,
+    canOpenFile: file => openable.has(file),
+    model: tutorConfig.model,
+  }
+}
+
+/**
+ * Moves the tab's focus ring to what its screen asks for. A tab without the keys says no, the
+ * usual case after opening it from the main pane, so a refusal or failure only reaches the
+ * debug log: every control also works by click.
+ */
+const focusTutor = async ($: EngineInterface, state: TutorState): Promise<void> => {
+  try {
+    const key = tutorScreen(state, await readTutorView($, state)).focusKey
+    if (key === undefined) return
+    const moved = await $.ui.focus({ requestId: TUTOR_PANE, key })
+    if (moved.deny !== undefined) $.ui.log(`mochi-crew: tutor focus stayed put: ${moved.deny}`, { to: 'debug' })
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor could not move the focus: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+/** Applies one event to the latest screen and redraws; the screens before and after it. */
+const changeTutor = async ($: EngineInterface, event: TutorEvent): Promise<{ readonly before: TutorState; readonly after: TutorState }> => {
+  const seen: { before: TutorState } = { before: TUTOR_CLOSED }
+  const after = await update($, tutor, current => {
+    seen.before = current
+    return applyTutor(current, event)
+  })
+  $.ui.invalidate('ui.render')
+  return { before: seen.before, after }
+}
+
+/** Applies one event to the latest screen and redraws; the screen it led to. */
+const showTutor = async ($: EngineInterface, event: TutorEvent): Promise<TutorState> => (await changeTutor($, event)).after
+
+/** One screen change from a handler: applied, drawn, and the focus moved onto it. */
+const dispatchTutor = async ($: EngineInterface, event: TutorEvent): Promise<TutorState> => {
+  const shown = await showTutor($, event)
+  await focusTutor($, shown)
+  return shown
+}
+
+/** Loads the saved consent and this project's progress once; a bad read starts fresh (logged). */
+const loadTutor = async ($: EngineInterface): Promise<void> => {
+  if ((await read($, tutorProject)) !== null) return
+  const savedConsent = await readSaved($, STORE.tutorConsent)
+  const saved = parseProgress(await readSaved($, STORE.tutorProgress))
+  const root = await $.session.root()
+  await update($, tutorConsent, () => (typeof savedConsent === 'number' && Number.isFinite(savedConsent) ? savedConsent : 0))
+  await update($, tutorProject, (): TutorProject | null => projectOf(saved, root))
+}
+
+const hasTutorConsent = async ($: EngineInterface): Promise<boolean> =>
+  (await read($, tutorConsent)) >= TUTOR_CONSENT_VERSION
+
+/** Saves this project's progress beside the other projects' (re-read, so none is dropped); true when the store took it. */
+const saveTutorProject = async ($: EngineInterface, project: TutorProject): Promise<boolean> => {
+  const root = await $.session.root()
+  const saved = parseProgress(await readSaved($, STORE.tutorProgress))
+  return persist($, STORE.tutorProgress, withProject(saved, root, project))
+}
+
+/** The tutor tab as the engine lists it, or undefined when it cannot say (logged). */
+const tutorPaneNow = async ($: EngineInterface): Promise<UiPane | undefined> => {
+  try {
+    return (await $.ui.panes()).find(pane => pane.id === TUTOR_PANE)
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: could not list the tutor tab: ${String(error)}`, { to: 'debug' })
+    return undefined
+  }
+}
+
+/**
+ * Opens or raises the tutor tab on the screen it was left on, the notice first until it is
+ * accepted; it never starts a round. Returns the toast saying how to reach the tab when it did
+ * not get the keys, else null.
+ */
+const openTutor = async ($: EngineInterface, pending?: TutorPending): Promise<string | null> => {
+  await loadTutor($)
+  const shown = await showTutor($, { kind: 'open', hasConsent: await hasTutorConsent($), ...(pending === undefined ? {} : { pending }) })
+  const opened = await $.ui.open({ id: TUTOR_PANE, title: TUTOR_TITLE, focus: true })
+  const pane = await tutorPaneNow($)
+  // Checked first: a tab waiting undrawn holds no keys either, and widening is what it needs.
+  if (!opened.isPlaced || pane?.isPlaced === false) return TUTOR_UNPLACED
+  if (pane?.isFocused !== true) return TUTOR_UNFOCUSED
+  await focusTutor($, shown)
+  return null
+}
+
+/** `y` on the notice: saved for next time, then Home, or the round asked for before it. */
+const acceptTutor = async ($: EngineInterface): Promise<void> => {
+  await update($, tutorConsent, () => TUTOR_CONSENT_VERSION)
+  // A failed save is logged by persist; the consent still holds until the process ends.
+  await persist($, STORE.tutorConsent, TUTOR_CONSENT_VERSION)
+  // Read inside the update, so a doubled `y` starts the pending round once.
+  let pending: TutorPending | undefined
+  const shown = await update($, tutor, current => {
+    pending = current.phase === 'consent' ? current.pending : undefined
+    return applyTutor(current, { kind: 'consented' })
+  })
+  $.ui.invalidate('ui.render')
+  if (pending !== undefined) {
+    await startRound($, pending.focus, pending.isDigestOnly)
+    return
+  }
+  await focusTutor($, shown)
+}
+
+/** `n` on the notice or `x: close`: the tab closes, and the next open starts from the notice or Home. */
+const closeTutor = async ($: EngineInterface, kind: 'declined' | 'closed'): Promise<void> => {
+  await showTutor($, { kind })
+  await $.ui.close({ id: TUTOR_PANE })
+}
+
+// ── writing a round ────────────────────────────────────────────────────────────────
+
+/**
+ * Stops what can be stopped of a call in flight: the digest's, grade's or follow-up's request,
+ * the wait on a fork (which has no signal), the spinner. Its reply is already stale once the
+ * screen moved on.
+ */
+const abortTutorCalls = (): void => {
+  tutorAbort?.abort()
+  tutorAbort = undefined
+  tutorForkStop?.()
+  tutorForkStop = undefined
+  tutorSpinner?.cancel()
+  tutorSpinner = undefined
+}
+
+/** The epoch a screen waits under (a round being written, a grade, a follow-up); undefined when it waits on nothing. */
+const waitingEpoch = (state: TutorState): number | undefined =>
+  state.phase === 'loading' || state.phase === 'grading' || state.phase === 'asking' ? state.epoch : undefined
+
+/** Whether the screen still waits on the call of `epoch`; a stop, a fallback or session end has moved it on otherwise. */
+const isLiveCall = async ($: EngineInterface, epoch: number): Promise<boolean> => waitingEpoch(await read($, tutor)) === epoch
+
+/**
+ * Applies the event `make` builds from the latest screen and a fresh epoch, or nothing when it
+ * returns undefined. Decided inside the update, so a doubled press claims one screen; the epoch
+ * is taken only when the reducer accepts the event. Undefined `epoch` when it did not.
+ */
+const claimTutor = async ($: EngineInterface, make: (current: TutorState, epoch: number) => TutorEvent | undefined): Promise<{ readonly state: TutorState; readonly epoch?: number }> => {
+  let claimed: number | undefined
+  const state = await update($, tutor, current => {
+    // A missed write runs this again on the newer screen, which decides afresh.
+    claimed = undefined
+    const epoch = tutorEpoch + 1
+    const event = make(current, epoch)
+    if (event === undefined) return current
+    const next = applyTutor(current, event)
+    if (next === current) return current
+    tutorEpoch = epoch
+    claimed = epoch
+    return next
+  })
+  $.ui.invalidate('ui.render')
+  return claimed === undefined ? { state } : { state, epoch: claimed }
+}
+
+/**
+ * Adds one call's spend to this conversation's total; stale and failed calls count too (C.7),
+ * but not once the conversation `generation` names has ended.
+ */
+const spendTutor = async ($: EngineInterface, usage: ModelUsage, generation: number): Promise<void> => {
+  if (generation !== tutorGeneration) return
+  await update($, tutorSession, (current): TutorSession => ({ ...current, usage: addTutorUsage(current.usage, usage) }))
+}
+
+/** Counts a fork's spend, and latches the digest when its reply missed the cache, on time or late. */
+const noteFork = async ($: EngineInterface, result: ModelForkResult, generation: number): Promise<void> => {
+  // Nothing to fork made no request; a reply from an ended conversation says nothing of this one's cache.
+  if (!('usage' in result) || generation !== tutorGeneration) return
+  await spendTutor($, result.usage, generation)
+  // An API error's usage says nothing about the cache: only a reply's does.
+  if ((result.isAnswered || result.reason === 'empty-reply') && isForkMiss(result.usage)) {
+    await update($, tutorSession, (current): TutorSession => (current.isForkSuspect ? current : { ...current, isForkSuspect: true }))
+  }
+}
+
+/** A fork's outcome: its result, or that the watchdog stopped waiting for it first. */
+type ForkWait = { readonly kind: 'result'; readonly result: ModelForkResult } | { readonly kind: 'late' }
+
+// A refused fork made no request either; the digest takes over as it does for nothing to fork.
+const NOTHING_FORKED: ModelForkResult = { isAnswered: false, reason: 'nothing-to-fork' }
+
+/**
+ * Asks the session's own chat for a round (C.2), waiting at most FORK_WAIT_MS. A fork has no
+ * signal, so the watchdog only stops the waiting: a late reply's spend still counts, and its
+ * cache miss still latches the digest.
+ */
+const runFork = async ($: EngineInterface, prompt: string): Promise<ForkWait> => {
+  const generation = tutorGeneration
+  const forked = $.model.fork({ prompt }).then(
+    (result): ForkWait => ({ kind: 'result', result }),
+    (error: unknown): ForkWait => {
+      $.ui.log(`mochi-crew: tutor fork was refused: ${String(error)}`, { to: 'debug' })
+      return { kind: 'result', result: NOTHING_FORKED }
+    },
+  )
+  let stopWaiting: (wait: ForkWait) => void = () => undefined
+  const late = new Promise<ForkWait>(resolve => {
+    stopWaiting = resolve
+  })
+  // A timer, not a sleep: a sleep would spend the hook's own budget.
+  const watchdog = $.clock.after(FORK_WAIT_MS, () => stopWaiting({ kind: 'late' }))
+  // A stop lets the wait go at once too: a fork that never settles would hold its round forever.
+  const stop = (): void => {
+    watchdog.cancel()
+    stopWaiting({ kind: 'late' })
+  }
+  tutorForkStop = stop
+  try {
+    const first = await Promise.race([forked, late])
+    if (first.kind === 'result') {
+      await noteFork($, first.result, generation)
+    } else {
+      void forked
+        .then(settled => (settled.kind === 'result' ? noteFork($, settled.result, generation) : undefined))
+        .catch((error: unknown) => $.ui.log(`mochi-crew: tutor could not count a late fork: ${String(error)}`, { to: 'debug' }))
+    }
+    return first
+  } finally {
+    watchdog.cancel()
+    if (tutorForkStop === stop) tutorForkStop = undefined
+  }
+}
+
+/**
+ * A tutor completion's outcome: its result, that the engine refused to send it (a blocked
+ * model), or that it was never sent because its screen had moved on.
+ */
+type CompleteCall = { readonly kind: 'result'; readonly result: ModelCompleteResult } | { readonly kind: 'refused' } | { readonly kind: 'stale' }
+
+/**
+ * Sends one tutor completion (a digest round, a grade, a follow-up) with its own abort, which
+ * `x` and session end pull (C.6), only while the screen still waits on `epoch`. Its spend
+ * counts for the session at once, stale or not.
+ */
+const runComplete = async ($: EngineInterface, request: ModelCompleteRequest, epoch: number): Promise<CompleteCall> => {
+  const controller = new AbortController()
+  tutorAbort = controller
+  const generation = tutorGeneration
+  try {
+    // Armed before the check, so a stop landing while it reads still aborts what is sent.
+    if (!(await isLiveCall($, epoch)) || controller.signal.aborted) return { kind: 'stale' }
+    const result = await $.model.complete(request, { signal: controller.signal })
+    await spendTutor($, result.usage, generation)
+    return { kind: 'result', result }
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor model call was refused: ${String(error)}`, { to: 'debug' })
+    return { kind: 'refused' }
+  } finally {
+    if (tutorAbort === controller) tutorAbort = undefined
+  }
+}
+
+/** The files this session touched in its own checkout, newest first, once each. */
+const ownTouched = (touched: readonly TouchedFile[]): readonly string[] =>
+  [...new Set([...touched].reverse().filter(file => file.worktree === undefined).map(file => file.path))]
+
+/** The transcript as the digest may use it, mapped at once so no tool result is held; none when it cannot be read (logged). */
+const readTranscript = async ($: EngineInterface, root: string): Promise<readonly TranscriptRow[]> => {
+  try {
+    return toTranscriptRows(await $.session.messages(), root, TUTOR_MESSAGES)
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor could not read the transcript: ${String(error)}`, { to: 'debug' })
+    return []
+  }
+}
+
+/**
+ * The first lines of up to two new (untracked) files this session touched, never a
+ * secret-looking one, a link, a large file or one that lands outside the project.
+ */
+const readNewFiles = async ($: EngineInterface, root: string, touched: readonly TouchedFile[], snapshot: TreeSnapshot | null): Promise<readonly { readonly path: string; readonly text: string }[]> => {
+  const marks = snapshot?.marks ?? {}
+  const paths = ownTouched(touched).filter(path => marks[path] === '?' && !isSecretPath(path)).slice(0, TUTOR_NEW_FILES)
+  if (paths.length === 0) return []
+  const rootReal = (await $.fs.stat(root, { resolve: true }).catch(() => undefined))?.realPath
+  if (rootReal === undefined) return []
+  const read = await Promise.all(paths.map(async path => {
+    try {
+      const stat = await $.fs.stat(`${root}/${path}`, { resolve: true })
+      if (!isReadableNewFile(stat, rootReal) || stat.realPath === undefined) return []
+      // Read where it landed, not by the spelling that was checked.
+      const text = await $.fs.read(stat.realPath)
+      return [{ path, text: text.split('\n').slice(0, TUTOR_NEW_FILE_LINES).join('\n') }]
+    } catch (error: unknown) {
+      $.ui.log(`mochi-crew: tutor could not read a new file: ${String(error)}`, { to: 'debug' })
+      return []
+    }
+  }))
+  return read.flat()
+}
+
+/** A git command for the tutor: its longer timeout, and its output capped so a huge diff is never held whole. */
+const tutorGit = async ($: EngineInterface, root: string, args: readonly string[]): Promise<string | undefined> =>
+  capGitOutput(await gitOutput($, root, args, TUTOR_GIT_MS))
+
+/** The uncommitted changes a digest may show, read in two steps; each part is absent when git fails. */
+type DigestChanges = { readonly plan: DiffPlan; readonly numstat?: string; readonly diff?: string }
+
+/**
+ * Lists the changes repository-wide first, renames found, and keeps only paths whose old and new
+ * names are both safe; then diffs just those, by literal path. One step with exclude pathspecs
+ * would let `git mv .env config.txt` through, since pathspecs apply before rename detection.
+ */
+const readChanges = async ($: EngineInterface, root: string, touched: readonly TouchedFile[], added: Readonly<Record<string, number>>): Promise<DigestChanges> => {
+  const [prefix, listed] = await Promise.all([
+    tutorGit($, root, ['rev-parse', '--show-prefix']),
+    tutorGit($, root, nameStatusArgs()),
+  ])
+  const none: DiffPlan = { paths: [], blocked: 0, omitted: 0 }
+  if (prefix === undefined || listed === undefined) return { plan: none }
+  const plan = planDiff(listed, prefix.replace(/\n$/, ''), touched, added)
+  if (plan.blocked > 0 || plan.omitted > 0) {
+    $.ui.log(`mochi-crew: tutor digest left out ${plan.blocked} secret-shaped and ${plan.omitted} extra changed files`, { to: 'debug' })
+  }
+  if (plan.paths.length === 0) return { plan }
+  const [numstat, diff] = await Promise.all([
+    tutorGit($, root, numstatArgs(plan.paths)),
+    tutorGit($, root, diffArgs(plan.paths)),
+  ])
+  return { plan, numstat, diff }
+}
+
+/** The masked digest of the project and this session (C.4); its reads run in parallel, and a part that fails is left out. */
+const gatherDigest = async ($: EngineInterface, root: string, focus: TutorFocus, touched: readonly TouchedFile[]): Promise<Digest> => {
+  const snapshot = await read($, tree)
+  const [log, changes, lsFiles, rows, newFiles] = await Promise.all([
+    tutorGit($, root, logArgs()),
+    readChanges($, root, touched, snapshot?.added ?? {}),
+    focus === 'project' ? tutorGit($, root, lsFilesArgs()) : Promise.resolve(undefined),
+    readTranscript($, root),
+    readNewFiles($, root, touched, snapshot),
+  ])
+  const { plan, numstat, diff } = changes
+  return buildDigest({
+    rootName: snapshot?.rootName ?? root.split(/[\\/]/).filter(part => part !== '').at(-1) ?? root,
+    branch: snapshot?.branch,
+    focus,
+    log,
+    numstat,
+    diff,
+    lsFiles,
+    newFiles,
+    rows,
+    touched,
+    added: snapshot?.added ?? {},
+    plan,
+  })
+}
+
+/** What a start asked for: the round's first epoch, its focus and plan, the learner it is pitched at. */
+type RoundOrder = { readonly epoch: number; readonly focus: TutorFocus; readonly plan: TutorPlan; readonly project: TutorProject; readonly at: number }
+
+/** The epoch a round being written waits under now; mutable, since a fallback to the digest moves it on. */
+type RoundHold = { epoch: number }
+
+/**
+ * Applies a call's event only while the screen waiting on that call is up, so a stopped round,
+ * grade or follow-up never paints over what replaced it. True when it was applied.
+ */
+const showReply = async ($: EngineInterface, epoch: number, event: TutorEvent): Promise<boolean> => {
+  let isShown = false
+  const shown = await update($, tutor, current => {
+    if (waitingEpoch(current) !== epoch) return current
+    isShown = true
+    return applyTutor(current, event)
+  })
+  if (!isShown) return false
+  $.ui.invalidate('ui.render')
+  await focusTutor($, shown)
+  return true
+}
+
+const dropStale = ($: EngineInterface): void => $.ui.log('mochi-crew: tutor dropped a stale reply', { to: 'debug' })
+
+/** The reason a reply was not a quiz, with counts only: model text is never logged. */
+const logInvalid = ($: EngineInterface, parsed: Extract<ParseOutcome, { isValid: false }>): void =>
+  $.ui.log(`mochi-crew: tutor reply invalid: ${parsed.why}${parsed.valid === undefined ? '' : ` (${parsed.valid} valid, ${parsed.dropped ?? 0} dropped)`}`, { to: 'debug' })
+
+/**
+ * Writes the round a start asked for (B.3): from the fork when the plan says so, falling back to
+ * the digest at most once; the digest never retries. Every continuation checks that the screen
+ * still waits on its epoch: a stopped round's reply is dropped, and only its spend is kept.
+ */
+const writeQuestions = async ($: EngineInterface, order: RoundOrder, hold: RoundHold): Promise<void> => {
+  const { focus, project, at } = order
+  let spent: TutorUsage = EMPTY_USAGE
+  const root = await $.session.root()
+  const touched = await read($, treeTouched)
+  const review = dueCards(project, 1)[0]?.question
+  const ctx = { focus, level: project.level, count: ROUND_SIZE - (review === undefined ? 0 : 1), misses: project.recentMisses, mastered: project.mastered }
+  // Unique across sessions: a replayed card keeps its own id, which a new question must never share.
+  const roundId = (): string => `round-${at}-${hold.epoch}`
+  const fail = async (failure: TutorFailure, canTryDigest: boolean): Promise<void> => {
+    await showReply($, hold.epoch, { kind: 'failed', failure, canTryDigest })
+  }
+  const show = async (source: 'fork' | 'digest', questions: readonly TutorQuestion[]): Promise<void> => {
+    const round: TutorRound = {
+      id: roundId(),
+      epoch: hold.epoch,
+      focus,
+      source,
+      startedAt: at,
+      questions: spliceReview(questions, review, hold.epoch),
+      index: 0,
+      answers: [],
+      isHintShown: false,
+      isRetry: false,
+      chat: [],
+      followUpsUsed: 0,
+      usage: spent,
+    }
+    if (await showReply($, hold.epoch, { kind: 'loaded', round })) await say($, 'tutor-start', '')
+  }
+  tutorDigest = null
+
+  if (order.plan.source === 'fork') {
+    const files = ownTouched(touched)
+    const commits = (await tutorGit($, root, logArgs())) ?? ''
+    if (!(await isLiveCall($, hold.epoch))) return dropStale($)
+    const waited = await runFork($, forkPrompt({ ...ctx, files, commits }))
+    if (!(await isLiveCall($, hold.epoch))) return dropStale($)
+    if (waited.kind === 'result') {
+      if ('usage' in waited.result) spent = addTutorUsage(spent, waited.result.usage)
+      const next = afterFork(waited.result)
+      if (next.kind === 'error') return fail(next.failure, true)
+      if (next.kind === 'parse') {
+        const parsed = parseRound(next.text, roundId(), new Set(files), ctx.count, hold.epoch)
+        if (parsed.isValid) return show('fork', parsed.questions)
+        logInvalid($, parsed)
+      }
+    } else {
+      $.ui.log('mochi-crew: tutor fork took too long, using the digest', { to: 'debug' })
+    }
+    const now = await $.clock.now()
+    // Once, under a new epoch, so the fork's late reply is stale and the digest's round is current.
+    const fellBack = await claimTutor($, (current, next) =>
+      waitingEpoch(current) === hold.epoch ? { kind: 'loading', epoch: next, focus, source: 'digest', at: now, note: TUTOR_FALLBACK_NOTE } : undefined,
+    )
+    if (fellBack.epoch === undefined) return dropStale($)
+    hold.epoch = fellBack.epoch
+    await focusTutor($, fellBack.state)
+  }
+
+  const digest = await gatherDigest($, root, focus, touched)
+  if (!(await isLiveCall($, hold.epoch))) return dropStale($)
+  // Nothing in git or the transcript, and nothing forked: no call is made (B.3).
+  if (digest.isEmpty) return fail({ kind: 'nothing-to-quiz' }, false)
+  tutorDigest = digest
+  const called = await runComplete($, digestRequest({ ...ctx, files: digest.files, commits: '' }, digest, tutorConfig), hold.epoch)
+  if (called.kind === 'stale' || !(await isLiveCall($, hold.epoch))) return dropStale($)
+  if (called.kind === 'refused') return fail({ kind: 'model-refused', model: tutorConfig.model }, false)
+  spent = addTutorUsage(spent, called.result.usage)
+  const next = afterDigest(called.result)
+  if (next.kind === 'error') return fail(next.failure, false)
+  const parsed = parseRound(next.text, roundId(), new Set(digest.files), ctx.count, hold.epoch)
+  if (!parsed.isValid) {
+    logInvalid($, parsed)
+    return fail({ kind: 'bad-reply', why: parsed.why }, false)
+  }
+  return show('digest', parsed.questions)
+}
+
+/** Runs `work` with the tab's spinner turning, released when it settles (only this one: a newer call's stays). */
+const withSpinner = async ($: EngineInterface, work: () => Promise<void>): Promise<void> => {
+  // The ticker repaints only the scene, so the spinner and its seconds need their own redraw.
+  const spinner = $.clock.every(TUTOR_SPINNER_MS, () => $.ui.invalidate('ui.render'))
+  tutorSpinner = spinner
+  try {
+    await work()
+  } finally {
+    spinner.cancel()
+    if (tutorSpinner === spinner) tutorSpinner = undefined
+  }
+}
+
+/** Writes a round with the loading spinner turning; a round that throws goes back Home rather than spin on (logged). */
+const writeRound = async ($: EngineInterface, order: RoundOrder): Promise<void> => {
+  const hold: RoundHold = { epoch: order.epoch }
+  return withSpinner($, async () => {
+    try {
+      await writeQuestions($, order, hold)
+    } catch (error: unknown) {
+      $.ui.log(`mochi-crew: tutor could not write a round: ${String(error)}`, { to: 'debug' })
+      // Its own loading screen only, by the epoch it holds: a round started after this one was stopped has a higher one.
+      await update($, tutor, current => (current.phase === 'loading' && current.epoch === hold.epoch ? applyTutor(current, { kind: 'cancel' }) : current))
+      $.ui.invalidate('ui.render')
+    }
+  })
+}
+
+/**
+ * Starts a round on `focus`, asking for consent first. One call runs at a time and a round on
+ * screen is finished first: a start then is turned away with a toast saying which. The round is written unawaited, so a press and `/mochi
+ * tutor start` answer at once; true when its loading screen is up.
+ */
+const startRound = async ($: EngineInterface, focus: TutorFocus, isDigestOnly: boolean): Promise<boolean> => {
+  if (!(await hasTutorConsent($))) {
+    await dispatchTutor($, { kind: 'open', hasConsent: false, pending: { focus, isDigestOnly } })
+    return false
+  }
+  // Read now rather than at the last measure: a `/model` switch since has a cache of its own.
+  await refreshModel($).catch((error: unknown) => $.ui.log(`mochi-crew: tutor could not read the model: ${String(error)}`, { to: 'debug' }))
+  const at = await $.clock.now()
+  const plan = choosePlan(await readPlanInput($, isDigestOnly, at))
+  const project = (await read($, tutorProject)) ?? FRESH_PROJECT
+  let refusal: string | undefined
+  const { state: shown, epoch } = await claimTutor($, (current, next) => {
+    refusal = tutorStartRefusal(current)
+    return refusal === undefined ? { kind: 'loading', epoch: next, focus, source: plan.source, at } : undefined
+  })
+  if (refusal !== undefined) {
+    $.ui.toast(refusal)
+    return false
+  }
+  if (epoch === undefined) return false
+  // Nothing on screen waited, so a call still running is a stopped one's.
+  abortTutorCalls()
+  await focusTutor($, shown)
+  void writeRound($, { epoch, focus, plan, project, at }).catch((error: unknown) =>
+    $.ui.log(`mochi-crew: tutor round failed: ${String(error)}`, { to: 'debug' }),
+  )
+  return true
+}
+
+/** The review round of `cards` under `epoch`, each question reshuffled by its own seed. */
+const reviewRound = (cards: ReturnType<typeof dueCards>, epoch: number, now: number, focus: TutorFocus): TutorRound => ({
+  // Unique across sessions, since a review card keeps its question's own id.
+  id: `review-${now}-${epoch}`,
+  epoch,
+  focus,
+  source: 'review',
+  startedAt: now,
+  // Seeded per question, as the parser seeds a round, so equal-length option lists move apart.
+  questions: cards.map(({ question }, index) => replayQuestion(question, epoch * 31 + index)),
+  index: 0,
+  answers: [],
+  isHintShown: false,
+  isRetry: false,
+  chat: [],
+  followUpsUsed: 0,
+  usage: EMPTY_USAGE,
+})
+
+/**
+ * A review round from the deck's due cards, asked again as they were saved (choices reshuffled)
+ * with no model call. True when it is on screen.
+ */
+const startReview = async ($: EngineInterface): Promise<boolean> => {
+  const cards = dueCards((await read($, tutorProject)) ?? FRESH_PROJECT, REVIEW_ROUND_MAX)
+  if (cards.length === 0) return false
+  const now = await $.clock.now()
+  let refusal: string | undefined
+  const { state: shown, epoch } = await claimTutor($, (current, next) => {
+    refusal = tutorStartRefusal(current)
+    return refusal === undefined ? { kind: 'loaded', round: reviewRound(cards, next, now, current.phase === 'home' ? current.focus : 'recent') } : undefined
+  })
+  if (refusal !== undefined) {
+    $.ui.toast(refusal)
+    return false
+  }
+  // Only Home and the summary take a review round.
+  if (epoch === undefined) return false
+  abortTutorCalls()
+  await focusTutor($, shown)
+  return true
+}
+
+
+// ── playing a round ────────────────────────────────────────────────────────────────
+
+/**
+ * Scores the round on screen and shows its summary: XP once (the existing level-up toast and
+ * sound fire), the deck and level saved for this project, the session's count, Mochi's quip and
+ * a dance for a perfect round. Also `x: end` mid-round, which scores what was answered and
+ * counts the question on screen as skipped. Decided inside the update, so a doubled press pays once.
+ */
+const finishRound = async ($: EngineInterface): Promise<void> => {
+  const state = await read($, tutor)
+  if (state.phase !== 'question' && state.phase !== 'feedback') return
+  const round = closeOutRound(state.round)
+  const xp = roundXp(round)
+  const project = (await read($, tutorProject)) ?? FRESH_PROJECT
+  const after = afterRound(project, round, await $.clock.now())
+  const event: TutorEvent = { kind: 'finished', xp, levelBefore: project.level, levelAfter: after.level, wasForkMiss: wasForkMiss(round) }
+  let isFinished = false
+  const shown = await update($, tutor, current => {
+    if ((current.phase !== 'question' && current.phase !== 'feedback') || current.round.id !== round.id) return current
+    isFinished = true
+    return applyTutor(current, event)
+  })
+  if (!isFinished) return
+  $.ui.invalidate('ui.render')
+  await focusTutor($, shown)
+  await update($, tutorProject, (): TutorProject | null => after)
+  // A retry pass replays the round just counted.
+  if (!round.isRetry) await update($, tutorSession, (current): TutorSession => ({ ...current, rounds: current.rounds + 1 }))
+  // A failed write is logged by persist; the round still completes.
+  await saveTutorProject($, after)
+  if (xp > 0) await saveStats($, score => ({ ...score, xp: score.xp + xp }))
+  const { right, total, isPerfect } = scoreRound(round)
+  await say($, isPerfect ? 'tutor-perfect' : 'tutor-done', `${right}/${total}`)
+  if (isPerfect) await react($, 'dance')
+}
+
+/**
+ * `x` and `/mascot tutor stop`. While a call runs, it is stopped (a digest aborted, a fork only
+ * no longer waited for) and the screen steps back; with a question on screen, the round ends
+ * and is scored.
+ */
+const cancelTutor = async ($: EngineInterface): Promise<void> => {
+  const state = await read($, tutor)
+  if (state.phase === 'question' || state.phase === 'feedback') return finishRound($)
+  // The screen first: an aborted call settles at once, and must find its screen gone.
+  const shown = await showTutor($, { kind: 'cancel' })
+  abortTutorCalls()
+  await focusTutor($, shown)
+}
+
+/** A pick on a choice question: graded locally, and Mochi says how it went. */
+const chooseOption = async ($: EngineInterface, index: number): Promise<void> => {
+  const { before, after } = await changeTutor($, { kind: 'chose', index })
+  if (after === before || after.phase !== 'feedback') return
+  await focusTutor($, after)
+  await say($, currentAnswer(after.round)?.outcome === 'right' ? 'tutor-right' : 'tutor-wrong', '')
+}
+
+/** `n`: the next question, the summary after the last one, or Home from the summary. */
+const nextTutor = async ($: EngineInterface): Promise<void> => {
+  const state = await read($, tutor)
+  if (state.phase === 'feedback' && isLastQuestion(state.round)) return finishRound($)
+  await dispatchTutor($, { kind: 'next' })
+}
+
+/** `r` on the summary: this round's misses again, locally, reshuffled, for no XP. */
+const retryMissed = async ($: EngineInterface): Promise<void> => {
+  const at = await $.clock.now()
+  // A new seed only: from the summary no call runs.
+  const { state, epoch } = await claimTutor($, (current, next) => (current.phase === 'summary' ? { kind: 'retry-missed', epoch: next, at } : undefined))
+  if (epoch !== undefined) await focusTutor($, state)
+}
+
+/** `o` on feedback: the question's file in the editor, only when the session itself touched exactly that file in its own checkout. */
+const openTutorFile = async ($: EngineInterface): Promise<void> => {
+  const state = await read($, tutor)
+  if (state.phase !== 'feedback') return
+  const file = currentQuestion(state.round)?.file
+  if (file === undefined) return
+  // Checked again here, not only where the button is drawn: the path came from the model.
+  if (!(await read($, treeTouched)).some(touched => touched.worktree === undefined && touched.path === file)) return
+  // The button is drawn on the terminal only; any other surface gets openInEditor's own refusal.
+  $.ui.toast(await openInEditor($, undefined, file, tutorViewport.surface))
+}
+
+/** A screen waiting on one grade or follow-up call. */
+type TutorWait = Extract<TutorState, { phase: 'grading' | 'asking' }>
+
+/**
+ * Puts up the screen that waits on a grade or a follow-up, under a new epoch claimed inside the
+ * update as a start does, so a doubled Enter sends one call and never stops the first. Undefined
+ * when the event did not fit (no question on screen, no follow-ups left, one already waiting).
+ */
+const beginWait = async ($: EngineInterface, event: (epoch: number) => TutorEvent): Promise<TutorWait | undefined> => {
+  const { state, epoch } = await claimTutor($, (current, next) => event(next))
+  if (epoch === undefined || (state.phase !== 'grading' && state.phase !== 'asking') || state.epoch !== epoch) return undefined
+  // A question or feedback waited on nothing, so a call still running is a stopped one's.
+  abortTutorCalls()
+  await focusTutor($, state)
+  return state
+}
+
+/** A grade's or follow-up's reply text, or null when there is none; its spend when a request was made. */
+type TutorReply = { readonly text: string | null; readonly usage?: ModelUsage }
+
+/** One grade or follow-up completion; a failure is logged by kind only, never with model text. */
+const askTutorModel = async ($: EngineInterface, request: ModelCompleteRequest, epoch: number): Promise<TutorReply> => {
+  const called = await runComplete($, request, epoch)
+  // A stale call was never sent; its caller drops it on the same check.
+  if (called.kind !== 'result') return { text: null }
+  const { result } = called
+  if (!result.isAnswered) {
+    $.ui.log(`mochi-crew: tutor call failed: ${result.reason}`, { to: 'debug' })
+    return { text: null, usage: result.usage }
+  }
+  return { text: result.text, usage: result.usage }
+}
+
+/** The spend to carry on a reply's event, when a request was made. */
+const spendOf = (reply: TutorReply): { readonly usage?: ModelUsage } => (reply.usage === undefined ? {} : { usage: reply.usage })
+
+/**
+ * Enter on an explain question's field (B.4): a too-short answer only gets a toast; otherwise
+ * the answer, cut to 600, goes to the grader under its own abort. The verdict comes from the
+ * points; a failed or unreadable grade, or `x`, hands grading to the learner.
+ */
+const submitAnswer = async ($: EngineInterface, text: string): Promise<void> => {
+  if (isAnswerTooShort(text)) {
+    $.ui.toast(TUTOR_TOO_SHORT)
+    return
+  }
+  const at = await $.clock.now()
+  const waiting = await beginWait($, epoch => ({ kind: 'grading', epoch, given: text, at }))
+  if (waiting === undefined) return
+  const { epoch } = waiting
+  const question = currentQuestion(waiting.round)
+  // The held answer, already cut: the grader reads what the feedback will show.
+  const given = currentAnswer(waiting.round)?.given
+  if (question?.kind !== 'explain' || given === undefined) {
+    await showReply($, epoch, { kind: 'grade-failed' })
+    return
+  }
+  await withSpinner($, async () => {
+    try {
+      const reply = await askTutorModel($, gradeRequest(question, given, tutorConfig), epoch)
+      if (!(await isLiveCall($, epoch))) return dropStale($)
+      const grade = reply.text === null ? null : parseGrade(reply.text, question.keyPoints.length)
+      if (grade === null) {
+        if (reply.text !== null) $.ui.log('mochi-crew: tutor grade reply invalid', { to: 'debug' })
+        await showReply($, epoch, { kind: 'grade-failed', ...spendOf(reply) })
+        return
+      }
+      if (!(await showReply($, epoch, { kind: 'graded', points: grade.points, note: grade.note, ...spendOf(reply) }))) return
+      await say($, verdictOf(grade.points) === 'right' ? 'tutor-right' : 'tutor-wrong', '')
+    } catch (error: unknown) {
+      $.ui.log(`mochi-crew: tutor could not grade an answer: ${String(error)}`, { to: 'debug' })
+      await showReply($, epoch, { kind: 'grade-failed' })
+    }
+  })
+}
+
+/** The diff excerpt a digest kept for `file`: own keys only, so a file named like an Object method reads nothing. */
+const excerptFor = (digest: Digest | null, file: string | undefined): string | undefined =>
+  digest !== null && file !== undefined && Object.hasOwn(digest.excerpts, file) ? digest.excerpts[file] : undefined
+
+/**
+ * Enter on the feedback's ask field (B.6): one capped completion on the tutor model, never a
+ * fork, with the round's diff excerpt for the question's file on digest rounds. A failure costs
+ * no follow-up and only says so in a toast; model text never goes there.
+ */
+const submitAsk = async ($: EngineInterface, text: string): Promise<void> => {
+  if (text.trim() === '') return
+  const at = await $.clock.now()
+  const waiting = await beginWait($, epoch => ({ kind: 'asking', epoch, at }))
+  if (waiting === undefined) return
+  const { epoch, round } = waiting
+  const question = currentQuestion(round)
+  const failAsk = async (reply?: TutorReply): Promise<void> => {
+    if (await showReply($, epoch, { kind: 'ask-failed', ...(reply === undefined ? {} : spendOf(reply)) })) $.ui.toast(TUTOR_ASK_FAILED)
+  }
+  if (question === undefined) return failAsk()
+  // Only a digest round sent the diff; a fork's prefix was the chat itself, and a review has none.
+  const excerpt = round.source === 'digest' ? excerptFor(tutorDigest, question.file) : undefined
+  await withSpinner($, async () => {
+    try {
+      const reply = await askTutorModel($, askRequest(question, currentAnswer(round), round.chat, text, excerpt, tutorConfig), epoch)
+      if (!(await isLiveCall($, epoch))) return dropStale($)
+      // Cleaned here as well as in the reducer, so a blank reply counts as none and costs no follow-up.
+      const answer = reply.text === null ? '' : cleanModelText(reply.text)
+      if (answer === '') return failAsk(reply)
+      await showReply($, epoch, { kind: 'answered-ask', ask: text, reply: answer, ...spendOf(reply) })
+    } catch (error: unknown) {
+      $.ui.log(`mochi-crew: tutor could not answer a follow-up: ${String(error)}`, { to: 'debug' })
+      await failAsk()
+    }
+  })
+}
+
+/** A typed answer or follow-up. Never logged: it is the person's own text. */
+const submitTutorText = async ($: EngineInterface, purpose: TutorInputRow['purpose'], text: string): Promise<void> => {
+  try {
+    await (purpose === 'ask' ? submitAsk($, text) : submitAnswer($, text))
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor ${purpose} failed: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+/** Runs a tutor control; a failure is logged and the tab stays as it was. */
+const pressTutor = async ($: EngineInterface, action: TutorAction): Promise<void> => {
+  try {
+    switch (action.kind) {
+      case 'consent':
+        return await acceptTutor($)
+      case 'decline':
+        return await closeTutor($, 'declined')
+      case 'close':
+        return await closeTutor($, 'closed')
+      case 'toggle-digest':
+        await dispatchTutor($, { kind: 'toggle-digest' })
+        return
+      case 'start': {
+        const state = await read($, tutor)
+        await startRound($, action.focus, state.phase === 'home' && state.isDigestOnly)
+        return
+      }
+      case 'retry':
+      case 'try-digest': {
+        const state = await read($, tutor)
+        if (state.phase !== 'error') return
+        await startRound($, state.focus, action.kind === 'try-digest')
+        return
+      }
+      case 'review':
+        await startReview($)
+        return
+      case 'cancel':
+        return await cancelTutor($)
+      case 'choose':
+        return await chooseOption($, action.index)
+      case 'hint':
+        await dispatchTutor($, { kind: 'hint' })
+        return
+      case 'skip':
+        await dispatchTutor($, { kind: 'skip' })
+        return
+      case 'reveal':
+        await dispatchTutor($, { kind: 'reveal' })
+        return
+      case 'self-grade':
+        await dispatchTutor($, { kind: 'self-graded', outcome: action.outcome })
+        return
+      case 'next':
+        return await nextTutor($)
+      case 'retry-missed':
+        return await retryMissed($)
+      case 'open-file':
+        return await openTutorFile($)
+    }
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor control ${action.kind} failed: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+/** The focus a screen was on, for the Home it goes back to. */
+const focusOf = (state: Exclude<TutorState, { phase: 'closed' | 'consent' }>): TutorFocus =>
+  state.phase === 'home' || state.phase === 'loading' || state.phase === 'error' ? state.focus : state.round.focus
+
+/**
+ * Session end (C.6): the round in flight is stopped and any on screen dropped unscored, as a new
+ * conversation starts; the tab goes back Home. Progress already saved stays.
+ */
+const endTutorSession = async ($: EngineInterface): Promise<void> => {
+  tutorGeneration += 1
+  tutorDigest = null
+  // The screen first: an aborted call settles at once, and must find its screen gone.
+  await update($, tutor, (current): TutorState =>
+    current.phase === 'closed' || current.phase === 'consent' || current.phase === 'home'
+      ? current
+      : { phase: 'home', focus: focusOf(current), isDigestOnly: false },
+  )
+  abortTutorCalls()
+  $.ui.invalidate('ui.render')
+}
+
+/**
+ * Forgets this project's level and deck, here and in the store (other projects keep theirs),
+ * and the consent, which covers every project, so the notice shows again before the next model
+ * call. True when the store took both.
+ */
+const resetTutorProgress = async ($: EngineInterface): Promise<boolean> => {
+  // Loaded first: a later first load must not bring back the consent cleared here.
+  await loadTutor($)
+  await update($, tutorProject, (): TutorProject | null => FRESH_PROJECT)
+  await update($, tutorConsent, () => 0)
+  $.ui.invalidate('ui.render')
+  const [isProgressSaved, isConsentSaved] = await Promise.all([saveTutorProject($, FRESH_PROJECT), persist($, STORE.tutorConsent, 0)])
+  return isProgressSaved && isConsentSaved
+}
+
+const toastTutorHint = ($: EngineInterface, hint: string | null): void => {
+  if (hint !== null) $.ui.toast(hint)
+}
+
+/**
+ * Answers `/mascot tutor [action]` with neutral text only: the line lands in the transcript, so
+ * no question or model text ever goes in it.
+ */
+const runTutorCommand = async ($: EngineInterface, verb: TutorVerb): Promise<string> => {
+  if (!isInteractive) return 'Tutor needs an interactive session.'
+  switch (verb) {
+    case 'open':
+      toastTutorHint($, await openTutor($))
+      return 'Tutor opened.'
+    case 'start':
+    case 'digest': {
+      const state = await read($, tutor)
+      const pending: TutorPending = { focus: state.phase === 'home' ? state.focus : 'recent', isDigestOnly: verb === 'digest' }
+      toastTutorHint($, await openTutor($, pending))
+      // Without consent the notice is on screen, holding the round until `y`.
+      if (!(await hasTutorConsent($))) return 'Tutor opened.'
+      return (await startRound($, pending.focus, pending.isDigestOnly)) ? 'Tutor round starting in its tab.' : 'Tutor opened.'
+    }
+    case 'review': {
+      await loadTutor($)
+      if (dueCards((await read($, tutorProject)) ?? FRESH_PROJECT, 1).length === 0) return 'No missed questions to review yet.'
+      toastTutorHint($, await openTutor($))
+      return (await startReview($)) ? 'Tutor round starting in its tab.' : 'Tutor opened.'
+    }
+    case 'stop':
+      await cancelTutor($)
+      return 'Tutor stopped.'
+    case 'reset':
+      return (await resetTutorProgress($))
+        ? 'Tutor progress for this project and the data notice consent cleared.'
+        : 'Tutor progress for this project and the data notice consent cleared (could not save it for next time).'
   }
 }
 
@@ -1027,18 +2079,21 @@ let isTreePulsing = false
 let treeReading: Promise<void> | undefined
 let isTreeReadDue = false
 
-/** A git command's output in the project root, or undefined when it fails or there is no repo. */
-const gitOutput = async ($: EngineInterface, root: string, args: readonly string[]): Promise<string | undefined> => {
+/**
+ * A git command's output in the project root, or undefined when it fails or there is no repo.
+ * `timeoutMs` bounds it; the tree's reads are quick, the tutor's diffs may take longer.
+ */
+const gitOutput = async ($: EngineInterface, root: string, args: readonly string[], timeoutMs: number = TREE_RUN_MS): Promise<string | undefined> => {
   try {
     // No optional locks, so a refresh never holds index.lock against the person's own git; no
     // fsmonitor command from the repository's config.
     const ran = await $.process.run(
       ['git', '--no-optional-locks', '-c', 'core.fsmonitor=false', ...args],
-      { cwd: root, timeoutMs: TREE_RUN_MS },
+      { cwd: root, timeoutMs },
     )
     return ran.exitCode === 0 ? ran.stdout : undefined
   } catch (error: unknown) {
-    $.ui.log(`mochi-crew: git ${args[0] ?? ''} failed for the file tree: ${String(error)}`, { to: 'debug' })
+    $.ui.log(`mochi-crew: git ${args[0] ?? ''} failed: ${String(error)}`, { to: 'debug' })
     return undefined
   }
 }
@@ -1353,8 +2408,13 @@ const openInEditor = async ($: EngineInterface, worktree: string | undefined, pa
   return `Could not open ${shown}: no editor found (set VISUAL to code, cursor or zed).`
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  tutorConfig = parseTutorConfig(options)
   on('session.end', async ($, e, next) => {
+    // A round in flight belongs to the conversation ending: its late reply must not land in the next.
+    await endTutorSession($).catch((error: unknown) =>
+      $.ui.log(`mochi-crew: tutor could not stop at session end: ${String(error)}`, { to: 'debug' }),
+    )
     // Every ending closes this conversation's figures, a /clear and a resume included.
     await resetConversation($)
     isTreePulsing = false
@@ -1378,6 +2438,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => (logFailure($, 'session.measure', next.error), next(e)))
 
   on('session.start', async ($, e, next) => {
+    isInteractive = e.isInteractive
     await loadSaved($)
     // Local state only, so it is cheap to await; done first so no turn is counted and then wiped.
     await resetConversation($).catch((error: unknown) =>
@@ -1387,8 +2448,8 @@ export const register: Register = on => {
     for (const name of MASCOT_COMMANDS) {
       await $.command.register({
         name,
-        description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, set the session badge, change outfit, toggle sound',
-        argumentHint: '[journal | missions | achievements | meter | files [on|off] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]',
+        description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, quiz you on the project, set the session badge, change outfit, toggle sound',
+        argumentHint: '[journal | missions | achievements | meter | files [on|off] | tutor [start|digest|review|stop|reset] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]',
       })
     }
     void $.ui.open({ id: PANE, title: TITLE })
@@ -1504,9 +2565,10 @@ export const register: Register = on => {
     const diary = await read($, journal)
     const diaryLine = journalLine(diary)
     const goalLine = missionLine(await read($, missions), diary)
+    // A live bug wins over a round in the tutor tab, which wins over what Mochi is doing.
     const label = liveBug !== null && isBugAlive(liveBug) && current.kind === 'idle'
       ? `fighting a bug · ${liveBug.command}`
-      : activityLabel(current, now, isThinking(currentTurn))
+      : tutorHudLabel(await read($, tutor)) ?? activityLabel(current, now, isThinking(currentTurn))
     const { Box, Text, Button } = $.ui.resolve(e)
     // Only the terminal draws the scene above the HUD.
     const isTerminal = e.surface === 'terminal'
@@ -1694,6 +2756,7 @@ export const register: Register = on => {
           <Button key="place" hotkey="b" plain label="place" onPress={() => void pressButton($, () => cyclePlace($))} />
           <Button key="sound" hotkey="s" plain label={soundOn ? 'mute' : 'sound'} onPress={() => void pressButton($, () => toggleSound($))} />
           <Button key="files" hotkey="t" plain label="files" onPress={() => void pressButton($, () => runMascotCommand($, 'files'))} />
+          <Button key="tutor" hotkey="q" plain label="tutor" onPress={() => void pressButton($, () => openTutor($))} />
         </Box>
       </Box>
     )
@@ -1718,6 +2781,59 @@ export const register: Register = on => {
           cells={sceneCells}
         />
         {hud}
+      </Box>
+    )
+  })
+
+  // The tutor tab draws its screen from atoms only; presses and submits change it in handlers.
+  on('ui.render', { component: 'Pane', requestId: TUTOR_PANE }, async ($, e) => {
+    tutorViewport = { surface: e.surface, columns: e.props.bodyColumns, bodyRows: e.props.scroll.bodyRows }
+    const state = await read($, tutor)
+    const screen = tutorScreen(state, await readTutorView($, state))
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const line = (row: TutorRow) => (
+      // Questions, reasons and replies wrap; the rest is cut, so the controls stay in view.
+      <Text key={row.key} wrap={row.isWrapped ? 'wrap' : 'truncate-end'}>
+        {row.cells.map((part, index) => (
+          // Model text was cleaned when parsed; drawn as plain Text, cleaned once more.
+          <Text key={String(index)} {...TUTOR_TONES[part.tone]}>{safeText(part.text)}</Text>
+        ))}
+      </Text>
+    )
+    const control = (item: TutorControl) => (
+      <Button
+        key={item.key}
+        plain
+        label={safeText(item.label)}
+        {...(item.hotkey === undefined ? {} : { hotkey: item.hotkey })}
+        onPress={() => void pressTutor($, item.action)}
+      />
+    )
+    // Options and starts read as a list, one per row; the other controls share a row.
+    const isListed = (item: TutorControl) =>
+      item.action.kind === 'choose' || item.action.kind === 'start' || item.action.kind === 'review' || item.action.kind === 'self-grade'
+    const field = screen.input
+    // Mobile has no Input: its screens never ask for one, and this keeps a stray one off it.
+    // No `value` either: the ticker redraws every pane, and a value would wipe what is typed.
+    const typing = field !== undefined && 'Input' in elements
+      ? (
+        <elements.Input
+          key={field.key}
+          label={field.label}
+          placeholder={field.placeholder}
+          submitLabel={field.submitLabel}
+          onSubmit={text => void submitTutorText($, field.purpose, text)}
+        />
+      )
+      : null
+    return (
+      <Box flexDirection="column" alignItems="flex-start" paddingX={1}>
+        {screen.header.map(line)}
+        {screen.body.map(line)}
+        {typing}
+        <Box flexDirection="column">{screen.controls.filter(isListed).map(control)}</Box>
+        <Box flexDirection="row" gap={2}>{screen.controls.filter(item => !isListed(item)).map(control)}</Box>
       </Box>
     )
   })

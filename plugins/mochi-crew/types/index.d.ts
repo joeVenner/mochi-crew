@@ -199,6 +199,132 @@ export type BadgeTab = { readonly tty: string; readonly profile: string }
 /** Session badge: how the last session in this process ended, so a /clear hands its color on. */
 export type BadgeEnding = { readonly sessionId: string; readonly reason: string }
 
+/** Tutor: what a round asks about. */
+export type TutorFocus = 'recent' | 'turn' | 'project'
+
+/** Tutor: what kind of understanding a question checks, easiest first. */
+export type TutorTag = 'what' | 'how' | 'why' | 'what-if'
+
+/** Tutor: the fields every question kind shares. */
+export type TutorQuestionBase = {
+  readonly id: string
+  readonly tag: TutorTag
+  readonly topic: string
+  readonly prompt: string
+  readonly hint?: string
+  /** A project-relative path, kept only when it matched a file the tutor was given. */
+  readonly file?: string
+  readonly symbol?: string
+  /** Set on a question replayed from the review deck. */
+  readonly isReview?: true
+}
+
+/** Tutor: a multiple-choice question, graded locally; `why` gives each option's reason, in order. */
+export type ChoiceQuestion = TutorQuestionBase & {
+  readonly kind: 'choice'
+  readonly options: readonly string[]
+  readonly answer: number
+  readonly why: readonly string[]
+}
+
+/** Tutor: a question answered in the learner's own words, checked against its key points. */
+export type ExplainQuestion = TutorQuestionBase & {
+  readonly kind: 'explain'
+  readonly reference: string
+  readonly keyPoints: readonly string[]
+}
+
+export type TutorQuestion = ChoiceQuestion | ExplainQuestion
+
+/** Tutor: where a round's questions came from. */
+export type TutorSource = 'fork' | 'digest' | 'review'
+
+export type TutorOutcome = 'right' | 'partial' | 'wrong' | 'skipped'
+
+/** Tutor: how the learner answered one question. */
+export type TutorAnswer = {
+  readonly questionId: string
+  readonly outcome: TutorOutcome
+  readonly hasUsedHint: boolean
+  readonly picked?: number
+  readonly given?: string
+  readonly points?: readonly boolean[]
+  readonly note?: string
+  readonly isSelfGraded?: true
+  readonly isCut?: true
+}
+
+/** Tutor: one follow-up question and Mochi's reply. */
+export type TutorExchange = { readonly ask: string; readonly reply: string }
+
+/** Tutor: tokens spent, as the API counted them, summed over calls. */
+export type TutorUsage = {
+  readonly calls: number
+  readonly input: number
+  readonly cacheRead: number
+  readonly cacheWrite: number
+  readonly output: number
+}
+
+/** Tutor: why a round could not be written. */
+export type TutorFailure =
+  | { readonly kind: 'api-error'; readonly status: number | null; readonly error: string }
+  | { readonly kind: 'bad-reply'; readonly why: 'no-json' | 'bad-json' | 'too-long' | 'bad-version' | 'bad-shape' | 'too-few' }
+  | { readonly kind: 'empty-reply' | 'timeout' | 'nothing-to-quiz' }
+  | { readonly kind: 'model-refused'; readonly model: string }
+
+/** Tutor: one round of questions and how it is going. */
+export type TutorRound = {
+  readonly id: string
+  readonly epoch: number
+  readonly focus: TutorFocus
+  readonly source: TutorSource
+  readonly startedAt: number
+  readonly questions: readonly TutorQuestion[]
+  readonly index: number
+  /** One per answered question, in question order. */
+  readonly answers: readonly TutorAnswer[]
+  readonly isHintShown: boolean
+  readonly isRetry: boolean
+  /** Follow-ups on the current question. */
+  readonly chat: readonly TutorExchange[]
+  readonly followUpsUsed: number
+  readonly usage: TutorUsage
+}
+
+export type TutorLevel = 1 | 2 | 3
+
+/** Tutor: the tab's screen; transitions happen in handlers, never while drawing. */
+export type TutorState =
+  | { readonly phase: 'closed' }
+  | { readonly phase: 'consent'; readonly pending?: { readonly focus: TutorFocus; readonly isDigestOnly: boolean } }
+  | { readonly phase: 'home'; readonly focus: TutorFocus; readonly isDigestOnly: boolean; readonly note?: string }
+  | { readonly phase: 'loading'; readonly epoch: number; readonly focus: TutorFocus; readonly source: 'fork' | 'digest'; readonly since: number; readonly note?: string }
+  | { readonly phase: 'question' | 'feedback'; readonly round: TutorRound }
+  | { readonly phase: 'grading' | 'asking'; readonly round: TutorRound; readonly epoch: number; readonly since: number }
+  | { readonly phase: 'summary'; readonly round: TutorRound; readonly xp: number; readonly levelBefore: TutorLevel; readonly levelAfter: TutorLevel; readonly wasForkMiss: boolean }
+  | { readonly phase: 'error'; readonly failure: TutorFailure; readonly focus: TutorFocus; readonly canTryDigest: boolean }
+
+/** Tutor: a missed question waiting to be asked again, `dueRound` counted in the project's rounds. */
+export type TutorCard = { readonly question: TutorQuestion; readonly box: 1 | 2 | 3; readonly dueRound: number }
+
+/** Tutor: one project's progress (saved across sessions). */
+export type TutorProject = {
+  readonly level: TutorLevel
+  readonly rounds: number
+  readonly streak: number
+  readonly deck: readonly TutorCard[]
+  readonly mastered: readonly string[]
+  readonly recentMisses: readonly string[]
+  readonly updatedAt: number
+}
+
+/** Tutor: every project's progress as saved in the store, keyed by project root. */
+export type TutorProgressStore = { readonly v: 1; readonly projects: Readonly<Record<string, TutorProject>> }
+
+/** Tutor: this conversation's rounds and spend (not saved). */
+export type TutorSession = { readonly rounds: number; readonly usage: TutorUsage; readonly isForkSuspect: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
     'mochi-crew': {
@@ -249,6 +375,16 @@ declare module 'claude-code' {
       isBadgeOn: boolean
       /** Session badge: the tint the badge put on the tab, null when it is on its profile. */
       badgePainted: TintId | null
+      /** Tutor: the tutor tab's screen. */
+      tutor: TutorState
+      /** Tutor: the first-use notice version the person accepted, 0 before (saved across sessions). */
+      tutorConsent: number
+      /** Tutor: this project's level and review deck, null until the tab loads it. */
+      tutorProject: TutorProject | null
+      /** Tutor: this conversation's rounds and spend. */
+      tutorSession: TutorSession
+      /** Session meter: the session's model as of the last main-thread turn, null before one. */
+      meterResponseModel: string | null
     }
   }
 }

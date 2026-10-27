@@ -15,8 +15,11 @@ const MAX_DETAIL = 24
 const NEVER_OPENED: ReadonlySet<string> = new Set(['.git', 'node_modules'])
 
 // Control characters (C0, DEL, C1) and bidi or line separators: a file name holding them could
-// drive the terminal (an escape sequence) or reorder what the row shows.
-const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
+// drive the terminal (an escape sequence) or reorder what the row shows. Also the invisible
+// ones that hide or smuggle text: zero-width spaces and joiners, bidi marks (LRM, RLM, ALM), the
+// byte-order mark, and the tag characters that can carry a hidden prompt. The `u` flag makes a
+// tag character (outside the BMP) one match, so it becomes one `?`.
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu
 
 /** Text from disk, git or a tool call made safe to draw: each control character becomes `?`. */
 export const safeText = (text: string): string => text.replace(UNSAFE_TEXT, '?')

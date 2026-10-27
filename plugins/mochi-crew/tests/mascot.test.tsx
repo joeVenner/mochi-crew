@@ -784,6 +784,18 @@ describe('pane buttons', () => {
     await ui.unmount()
   })
 
+  test('the button row keeps its order and hotkeys, tutor last on q', async ($, on) => {
+    mock.clock(on)
+    const row = ['pet', 'feed', 'dance', 'outfit', 'place', 'sound', 'files', 'tutor']
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'mochi-crew', surface, ...PANE, props: PANE_PROPS })
+      const buttons = await ui.findAll({ type: 'Button' })
+      const drawn = buttons.filter(button => row.includes(button.key ?? '')).map(button => `${button.key ?? ''}:${String(button.props.hotkey)}`)
+      expect(drawn).toEqual(['pet:p', 'feed:f', 'dance:d', 'outfit:o', 'place:b', 'sound:s', 'files:t', 'tutor:q'])
+      await ui.unmount()
+    }
+  })
+
   test('Outfit cycles to the next outfit', async ($, on) => {
     mock.clock(on)
     mock.store(on)
