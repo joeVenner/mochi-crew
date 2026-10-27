@@ -1,6 +1,6 @@
 import type { TouchedFile, TutorFocus } from '../types'
 import { relativeTo, safeText } from './fileTree'
-import { redactSecrets } from './redact'
+import { REDACT_LIMIT, redactSecrets } from './redact'
 
 /** The whole digest a digest round sends, at most; every section fits inside it. */
 export const MAX_DIGEST_CHARS = 16_000
@@ -37,7 +37,7 @@ const MAX_NOTES = 4
 const MAX_TURN_NOTE = 1_200
 /** Tool uses kept in the trail. */
 const MAX_TRAIL = 20
-/** Default slice of one line before redaction. */
+/** Default length of one line, cut after redaction. */
 const MAX_LINE = 300
 /** Raw text kept per transcript row: enough for the longest note, so a huge reply is not held. */
 const MAX_ROW_TEXT = 4_000
@@ -116,19 +116,24 @@ const stripPrivateKeys = (text: string): string => {
   }
 }
 
-/**
- * Text made fit to send to a model: private-key blocks removed, then per line sliced to
- * `maxLine`, secrets masked and control characters replaced, then cut to `maxChars` at a line
- * boundary. Lines are sliced before redaction so the regexes stay cheap on a huge line. When
- * not even the first line fits, it is sliced to the cap, so the result never exceeds it.
- */
-export const maskForModel = (text: string, maxChars: number, maxLine: number = MAX_LINE): string => {
+// Redacted with this much past the slice, so a secret straddling the cut is still whole when the
+// rules see it; bounded, so the regexes stay cheap on a huge line.
+const redactLine = (line: string, maxLine: number): string => redactSecrets(line.slice(0, maxLine + REDACT_LIMIT)).slice(0, maxLine)
+
+// A diff line's `+`, `-` or ` ` marker is set aside first: glued to the text it would hide a
+// secret from a rule anchored to a word's start (`+postgres://u:pw@host`).
+const redactDiffLine = (line: string, maxLine: number): string => {
+  const marker = /^[+\- ]/.test(line) ? line.slice(0, 1) : ''
+  return marker + redactLine(line.slice(marker.length), Math.max(0, maxLine - marker.length))
+}
+
+const maskLines = (text: string, maxChars: number, maskLine: (line: string) => string): string => {
   if (maxChars <= 0 || text === '') return ''
   const kept: string[] = []
   let length = 0
   // Each line is masked as it is reached, so lines past the cap are never redacted at all.
   for (const raw of stripPrivateKeys(text).split(/\r?\n/)) {
-    const line = safeText(redactSecrets(raw.slice(0, maxLine)))
+    const line = safeText(maskLine(raw))
     if (kept.length === 0 && line.length > maxChars) return line.slice(0, maxChars)
     const added = kept.length === 0 ? line.length : line.length + 1
     if (length + added > maxChars) break
@@ -137,6 +142,19 @@ export const maskForModel = (text: string, maxChars: number, maxLine: number = M
   }
   return kept.join('\n')
 }
+
+/**
+ * Text made fit to send to a model: private-key blocks removed, then per line secrets masked,
+ * sliced to `maxLine` and control characters replaced, then cut to `maxChars` at a line
+ * boundary. Lines are redacted before the slice, so a cut never leaves half a token. When not
+ * even the first line fits, it is sliced to the cap, so the result never exceeds it.
+ */
+export const maskForModel = (text: string, maxChars: number, maxLine: number = MAX_LINE): string =>
+  maskLines(text, maxChars, line => redactLine(line, maxLine))
+
+/** maskForModel for a diff body: each line's marker is kept apart from the text redacted. */
+export const maskDiffForModel = (text: string, maxChars: number, maxLine: number = MAX_LINE): string =>
+  maskLines(text, maxChars, line => redactDiffLine(line, maxLine))
 
 const DIFF_FLAGS: readonly string[] = ['--no-color', '--no-ext-diff', '--no-textconv']
 
@@ -487,7 +505,7 @@ const trailText = (rows: readonly TranscriptRow[]): string =>
 
 const newFilesOf = (newFiles: DigestSources['newFiles']): readonly { readonly path: string; readonly text: string }[] =>
   newFiles.filter(file => !isSecretPath(file.path)).slice(0, MAX_NEW_FILES).map(file => {
-    const title = `file: ${safeText(file.path)} (new)`
+    const title = `file: ${safeText(redactSecrets(file.path))} (new)`
     // Each entry and the newline after it fit in MAX_NEW_FILE, so two full files fit the section.
     const body = maskForModel(file.text.split('\n').slice(0, NEW_FILE_LINES).join('\n'), MAX_NEW_FILE - title.length - 2)
     return { path: file.path, text: body === '' ? title : `${title}\n${body}` }
@@ -512,11 +530,11 @@ const diffPart = (sources: DigestSources, budget: number): DiffPart => {
   let used = 0
   for (const path of order) {
     const room = budget - used - (entries.length === 0 ? 0 : 1)
-    const title = `file: ${safeText(path)}`
+    const title = `file: ${safeText(redactSecrets(path))}`
     if (room < title.length + 1 + CUT_MARK.length) break
     const body = byPath.get(path) ?? ''
     const isBinary = body !== '' && !body.startsWith('@@')
-    const masked = isBinary || body === '' ? '' : maskForModel(body, MAX_DIFF_MASKED)
+    const masked = isBinary || body === '' ? '' : maskDiffForModel(body, MAX_DIFF_MASKED)
     const capped = capHunks(masked, Math.min(MAX_DIFF_FILE, room) - title.length - 1)
     const entry = isBinary ? `${title} (binary)`
       : body === '' ? `${title} (mode or rename only)`

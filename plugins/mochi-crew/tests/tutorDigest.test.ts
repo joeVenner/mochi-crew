@@ -11,6 +11,7 @@ import {
   layoutSummary,
   logArgs,
   MAX_DIFF_PATHS,
+  maskDiffForModel,
   maskForModel,
   nameStatusArgs,
   numstatArgs,
@@ -76,7 +77,7 @@ describe('tutorDigest', () => {
     expect(maskForModel(unclosed, 10_000)).toBe('keep\n[private key removed]')
   })
 
-  test('maskForModel cuts a 5000-char line before redacting', async () => {
+  test('maskForModel bounds a 5000-char line before redacting and cuts it to 300', async () => {
     const line = `${'a'.repeat(4_990)} ${DUMMY_KEY}`
     const started = Date.now()
     const masked = maskForModel(line, 10_000)
@@ -85,6 +86,32 @@ describe('tutorDigest', () => {
     expect(Date.now() - started < 1_000).toBe(true)
     // Within the slice, a secret is still masked.
     expect(maskForModel(`x ${DUMMY_KEY}`, 10_000)).toBe(`x ${MASK}`)
+  })
+
+  test('maskForModel redacts before the line cut, so a secret straddling it leaves no prefix', async () => {
+    // The key starts 10 characters before the cut: sliced first, its head would be too short to match.
+    const line = `${'a'.repeat(289)} ${DUMMY_KEY}`
+    const masked = maskForModel(line, 10_000)
+    expect(masked).toBe(`${'a'.repeat(289)} ${MASK}`)
+    expect(masked.includes('sk-test')).toBe(false)
+  })
+
+  test('maskDiffForModel masks URL credentials and YAML secrets behind a diff marker', async () => {
+    const body = ['@@ -1,2 +1,3 @@', '+postgres://admin:pa55word@db.local/app', '-DATABASE_URL=mysql://root:hunter2@host/x', ' password: hunter2', '+ok line'].join('\n')
+    const masked = maskDiffForModel(body, 10_000)
+    expect(masked).toBe(['@@ -1,2 +1,3 @@', `+postgres://${MASK}@db.local/app`, `-DATABASE_URL=mysql://${MASK}@host/x`, ` password: ${MASK}`, '+ok line'].join('\n'))
+    // The plain mask treats a marker as text, which is what hid the URL rule's anchor.
+    expect(maskForModel('+postgres://admin:pa55word@db.local/app', 10_000).includes('pa55word')).toBe(true)
+    expect(maskDiffForModel('', 100)).toBe('')
+  })
+
+  test('buildDigest masks a secret-shaped file name in diff and new-file titles', async () => {
+    const name = `src/${DUMMY_KEY}.ts`
+    const diff = fileDiff(name, [hunk(1, 1)])
+    const digest = buildDigest({ ...SOURCES, diff, newFiles: [{ path: `notes/${DUMMY_KEY}.md`, text: 'hello' }] })
+    expect(digest.text.includes(DUMMY_KEY)).toBe(false)
+    expect(digest.text).toContain(`file: src/${MASK}.ts`)
+    expect(digest.text).toContain(`file: notes/${MASK}.md (new)`)
   })
 
   test('maskForModel keeps newlines and replaces ANSI escapes', async () => {
