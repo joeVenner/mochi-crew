@@ -112,6 +112,23 @@ describe('tutorDigest', () => {
     }
   })
 
+  test('isSecretPath flags files whose purpose is secrets, in any folder and case', async () => {
+    for (const path of [
+      'infra/prod.tfvars', 'infra/prod.tfvars.json', 'keys/id_dsa', 'keys/id_dsa.pub', '.pgpass', 'web/.htpasswd', '.pypirc', '.dockercfg',
+      'home/.docker/config.json', '.git-credentials', 'android/release.jks', 'app.keystore', 'vault.KDBX', 'putty.ppk', 'AuthKey_ABC.p8',
+      'backup.tar.gpg', 'signing.asc', '.vault-token', 'kubeconfig', 'home/.kube/config', '.aws/credentials', '.aws/config', 'home/.ssh/known_hosts',
+      'config/database.yml', 'config/master.key', 'config/credentials.yml.enc', 'src/main/resources/application.properties', 'application-prod.properties',
+    ]) {
+      expect(isSecretPath(path)).toBe(true)
+    }
+  })
+
+  test('isSecretPath spares config files that only may hold a secret, which are masked instead', async () => {
+    for (const path of ['config.json', 'src/config.ts', 'app/settings.py', 'docker-compose.yml', 'kube/config.ts', 'docker/config.json', 'database.yml', 'db/database.yml', 'src/application.ts', 'tutorial.md']) {
+      expect(isSecretPath(path)).toBe(false)
+    }
+  })
+
   test('the diff runs in two steps: a repository-wide name list, then literal allowed paths', async () => {
     expect(nameStatusArgs()).toEqual(['diff', '--name-status', '-z', '-M', '-C', '--no-relative', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ':/'])
     const scope = ['--no-renames', '--relative', 'HEAD', '--', ':(literal)src/a b.ts', ':(literal)*:odd']

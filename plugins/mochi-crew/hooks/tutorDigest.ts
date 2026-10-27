@@ -48,11 +48,24 @@ const MAX_TOOL_NAME = 60
 const CUT_MARK = '… (cut)'
 const PEM_REMOVED = '[private key removed]'
 
-const SECRET_NAMES: ReadonlySet<string> = new Set(['.npmrc', '.netrc', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'])
-const SECRET_EXTENSIONS: readonly string[] = ['.pem', '.key', '.p12', '.pfx', '.lock']
-const SECRET_PREFIXES: readonly string[] = ['.env', 'id_rsa', 'id_ed25519', 'id_ecdsa']
-const SECRET_INFIXES: readonly string[] = ['secret', 'credential', '.tfstate', '.min.']
+// Files whose purpose is holding secrets are never read; a config file that merely may hold one
+// (settings.py, docker-compose.yml) is read and its values masked instead.
+const SECRET_NAMES: ReadonlySet<string> = new Set([
+  '.npmrc', '.netrc', '.pgpass', '.htpasswd', '.pypirc', '.dockercfg', '.vault-token', 'kubeconfig',
+  'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock',
+])
+const SECRET_EXTENSIONS: readonly string[] = [
+  '.pem', '.key', '.p12', '.pfx', '.p8', '.jks', '.keystore', '.kdbx', '.ppk', '.gpg', '.asc', '.lock',
+]
+const SECRET_PREFIXES: readonly string[] = ['.env', 'id_rsa', 'id_dsa', 'id_ed25519', 'id_ecdsa']
+const SECRET_INFIXES: readonly string[] = ['secret', 'credential', '.tfstate', '.tfvars', '.min.']
 const SKIPPED_FOLDERS: ReadonlySet<string> = new Set(['dist', 'node_modules'])
+// Everything under these is a credential store.
+const SECRET_FOLDERS: ReadonlySet<string> = new Set(['.aws', '.ssh', '.gnupg'])
+// Names that are secret only in their folder: `config` is everywhere, `.kube/config` is a login.
+const SECRET_TAILS: readonly (readonly [string, string])[] = [
+  ['.kube', 'config'], ['.docker', 'config.json'], ['config', 'database.yml'],
+]
 
 // Lowercased like the `icase` globs, so a read is refused for `Secrets.json` too.
 const isSecretName = (segment: string): boolean => {
@@ -61,19 +74,26 @@ const isSecretName = (segment: string): boolean => {
     || SECRET_EXTENSIONS.some(extension => name.endsWith(extension))
     || SECRET_PREFIXES.some(prefix => name.startsWith(prefix))
     || SECRET_INFIXES.some(infix => name.includes(infix))
+    // Spring's application.properties, application-prod.properties: the database password's home.
+    || (name.startsWith('application') && name.endsWith('.properties'))
 }
 
 /**
  * Whether a path is secret-shaped or noise (a lockfile, a build output), so it must never be
- * read for the model: the name rules apply to the basename and to every folder segment, and
- * `dist` or `node_modules` anywhere above it rules it out. The one list every tutor read is
+ * read for the model: the name rules apply to the basename and to every folder segment, a
+ * credential folder (`.aws`, `.ssh`) or `dist` or `node_modules` anywhere above it rules it out,
+ * and so does a folder-specific name like `.kube/config`. The one list every tutor read is
  * filtered by, git's included.
  */
 export const isSecretPath = (path: string): boolean => {
   const segments = path.split(/[\\/]+/).filter(segment => segment !== '' && segment !== '.')
   if (segments.length === 0) return false
-  const folders = segments.slice(0, -1)
-  return segments.some(isSecretName) || folders.some(folder => SKIPPED_FOLDERS.has(folder.toLowerCase()))
+  const lower = segments.map(segment => segment.toLowerCase())
+  const folders = lower.slice(0, -1)
+  const [parent, name] = lower.slice(-2)
+  return segments.some(isSecretName)
+    || folders.some(folder => SKIPPED_FOLDERS.has(folder) || SECRET_FOLDERS.has(folder))
+    || SECRET_TAILS.some(([folder, file]) => parent === folder && name === file)
 }
 
 const PEM_BEGIN = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----/g
