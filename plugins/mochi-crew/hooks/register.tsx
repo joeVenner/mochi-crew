@@ -24,6 +24,7 @@ import { XP_PER_MISSION, missionCount, missionLine, missionReport, newlyComplete
 import type { Mission } from './missions'
 import { safeDetail } from './redact'
 import { activityLabel, fileName, gadgetForCommand, mcpToolLabel, workerDoing, workerNote } from './mascot'
+import type { TutorVerb } from './outfits'
 import { DEFAULT_OUTFIT, OUTFIT_NAMES, isOutfitName, parseMascotCommand } from './outfits'
 import { ROLE_INFO, roleFor } from './roles'
 import type { SceneInput } from './sprite'
@@ -820,6 +821,8 @@ const runMascotCommand = async ($: EngineInterface, args: string): Promise<strin
         ? `File tree ${isOn ? 'on' : 'off'}.`
         : `File tree ${isOn ? 'on' : 'off'} (could not save it for next time).`
     }
+    case 'tutor':
+      return runTutorCommand($, command.action)
     case 'error':
       return command.message
   }
@@ -1008,6 +1011,30 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
     await raiseAlerts($)
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: meter could not count a turn: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+// ── Mochi Tutor ──────────────────────────────────────────────────────────────────────
+// A quiz tab on the project and on what Claude changed. The pure logic lives in tutor*.ts; the
+// wiring is here because the engine follows `$` only within the hooks module.
+
+const TUTOR_PANE = 'mochi-tutor'
+const TUTOR_TITLE = 'Tutor'
+
+/**
+ * Answers `/mascot tutor [action]` with neutral text only: the line lands in the transcript, so
+ * no question or model text ever goes in it.
+ */
+const runTutorCommand = async ($: EngineInterface, verb: TutorVerb): Promise<string> => {
+  switch (verb) {
+    case 'open':
+    case 'start':
+    case 'digest':
+    case 'review':
+    case 'stop':
+    case 'reset':
+      await $.ui.open({ id: TUTOR_PANE, title: TUTOR_TITLE, focus: true })
+      return 'Tutor opened.'
   }
 }
 

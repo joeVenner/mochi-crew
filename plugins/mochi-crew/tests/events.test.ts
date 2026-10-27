@@ -71,4 +71,17 @@ describe('copy', () => {
       for (let seed = 0; seed < 6; seed += 1) expect(quipFor(event, 'X', seed, 0).text).not.toContain('!')
     }
   })
+
+  test('tutor quips have no exclamation marks', async () => {
+    const events = ['tutor-start', 'tutor-right', 'tutor-wrong', 'tutor-done', 'tutor-perfect'] as const
+    for (const event of events) {
+      for (let seed = 0; seed < 6; seed += 1) {
+        const text = quipFor(event, '3/5', seed, 0).text
+        expect(text).not.toContain('!')
+        expect(text).not.toContain('{}')
+      }
+    }
+    expect(quipFor('tutor-done', '3/5', 0, 0).text).toBe('3/5 right. Nice work.')
+    expect(quipFor('tutor-done', '3/5', 1, 0).text).toBe('Round done: 3/5.')
+  })
 })
