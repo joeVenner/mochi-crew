@@ -175,6 +175,9 @@ export const quoteCode = (file: string, hunks: readonly Hunk[], quote: string): 
   return diff === null ? null : { file, diff, focusLine: match.number }
 }
 
+/** A hunk line's text as its window draws it: cut with its marker, so it is always a line of the card. */
+const drawnText = (line: HunkLine | undefined): string => (line === undefined ? '' : codeLine(`${line.marker}${line.text}`).slice(1))
+
 /** One option of a line question as its hunk holds it: where the option was, its line's text, its shown number. */
 export type LinePick = { readonly from: number; readonly text: string; readonly number: number }
 
@@ -188,7 +191,7 @@ export type LineCode = { readonly code: TutorCode; readonly lineNumbers: readonl
  * The card for a line question: the first hunk that holds every option as a distinct line, cut
  * to a window holding them all. Null when no hunk does or the lines span too far. `lineNumbers`
  * follows the options' order and `picks` the hunk's; each pick's text is the hunk's own line,
- * marker dropped and cut as `codeLine` cuts it, so what is drawn never comes from the model.
+ * exactly as the window draws it minus the marker, so what is drawn never comes from the model.
  * `focusLine` is the first option line in file order, so opening the file there gives no answer away.
  */
 export const lineCode = (file: string, hunks: readonly Hunk[], options: readonly string[]): LineCode | null => {
@@ -201,7 +204,7 @@ export const lineCode = (file: string, hunks: readonly Hunk[], options: readonly
     if (diff === null) continue
     const lineNumbers = matches.map(match => match.number)
     const picks = matches
-      .map((match, from) => ({ from, at: match.line, text: codeLine(hunk.lines[match.line]?.text ?? ''), number: match.number }))
+      .map((match, from) => ({ from, at: match.line, text: drawnText(hunk.lines[match.line]), number: match.number }))
       .sort((a, b) => a.at - b.at)
       .map(({ from, text, number }) => ({ from, text, number }))
     return { code: { file, diff, focusLine: Math.min(...lineNumbers) }, lineNumbers, picks }

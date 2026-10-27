@@ -245,7 +245,9 @@ const parseLine = (raw: JsonRecord, base: Base, anchors: Anchors): LineQuestion 
   const found = lineCode(file, anchors.lookup(file), quoted)
   if (found === null) return null
   const options = found.picks.map(pick => optionText(pick.text))
-  if (options.some(option => option === '') || new Set(options.map(normalized)).size !== options.length) return null
+  // Expanding tabs can push a line past the cap; over the cap drops, as cutting would no longer match the card.
+  if (options.some(option => option === '' || option.length > CODE_LINE_MAX)) return null
+  if (new Set(options.map(normalized)).size !== options.length) return null
   const picked = found.picks.findIndex(pick => pick.from === answer)
   const { hint, ...rest } = base
   return {
