@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorAnswer, TutorCard, TutorOutcome, TutorProgressStore, TutorProject, TutorQuestion, TutorRound } from '../types'
 import { CODE_MAX_CHARS, CODE_WINDOW, isCodeDiff } from '../hooks/tutorCode'
-import { FRESH_PROJECT, MAX_DECK, MAX_MASTERED, MAX_MISSES, MAX_PROJECTS, MAX_STORE_BYTES, afterRound, dueCards, nextLevel, parseProgress, projectOf, withProject } from '../hooks/tutorProgress'
+import { FRESH_PROJECT, MAX_DECK, MAX_MASTERED, MAX_MISSES, MAX_PROJECTS, MAX_STORE_BYTES, afterRound, dueCards, nextLevel, parseProgress, projectOf, promoteCard, withProject } from '../hooks/tutorProgress'
 
 const choice = (id: string, topic = `topic ${id}`): ChoiceQuestion => ({
   id,
@@ -104,6 +104,15 @@ describe('tutor progress', () => {
     expect(parsed.level).toBe(2)
     expect(projectOf(parseProgress(JSON.parse('{"v":1,"projects":{"__proto__":{"level":1}}}')), '__proto__')).toEqual(FRESH_PROJECT)
     expect(projectOf(store, '/elsewhere')).toEqual(FRESH_PROJECT)
+  })
+
+  test('promoteCard moves a card up a box on the shared schedule and retires box 3', async () => {
+    const held = card(choice('p:0'), 1, 2)
+    expect(promoteCard(held, 5)).toEqual({ ...held, box: 2, dueRound: 8 })
+    expect(promoteCard({ ...held, box: 2 }, 5)).toEqual({ ...held, box: 3, dueRound: 11 })
+    expect(promoteCard({ ...held, box: 3 }, 5)).toBeNull()
+    // Counted from the rounds given, whatever the card's old due round was.
+    expect(promoteCard({ ...held, dueRound: 99 }, 0)?.dueRound).toBe(3)
   })
 
   test('missed answers enter box 1 due next round', async () => {
