@@ -582,6 +582,27 @@ const diffPart = (sources: DigestSources, budget: number): DiffPart => {
   return { text: entries.join('\n'), files, excerpts }
 }
 
+// A fork round's card may quote any changed line the chat saw, so its local read keeps more of
+// each file than a digest sends; masking still stops here, so a 1 MB diff is never redacted whole.
+const MAX_CODE_MASKED = 16_000
+
+/**
+ * The masked excerpts a fork round's code cards are cut from (B.3), by file: each of `paths`
+ * that the diff holds a text body for, masked as the digest masks a file. The diff is input, so
+ * a file it names outside `paths`, or a secret-shaped one, is left out here too. Only drawn,
+ * never sent.
+ */
+export const codeExcerpts = (diff: string, paths: readonly string[]): Readonly<Record<string, string>> => {
+  const allowed = new Set(paths)
+  const kept = new Map<string, string>()
+  for (const { path, body } of splitDiffByFile(diff)) {
+    if (!allowed.has(path) || isSecretPath(path) || kept.has(path) || !body.startsWith('@@')) continue
+    kept.set(path, maskDiffForModel(body, MAX_CODE_MASKED))
+  }
+  // fromEntries defines own keys, so a file named `__proto__` is one more entry, not a prototype.
+  return Object.fromEntries(kept)
+}
+
 /**
  * The capped, masked digest a digest round sends. Sections go in the C.4 order, each masked and
  * cut to its cap; what a section leaves unused rolls over to the diff, which is built last, and

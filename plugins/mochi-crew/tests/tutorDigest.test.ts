@@ -8,6 +8,7 @@ import {
   buildDigest,
   capGitOutput,
   capHunks,
+  codeExcerpts,
   diffArgs,
   MAX_NEW_FILE_BYTES,
   isReadableNewFile,
@@ -494,5 +495,35 @@ describe('tutorDigest', () => {
     expect(turn.text.includes('last reply\nbecause')).toBe(true)
     const recent = buildDigest({ ...SOURCES, focus: 'recent', rows })
     expect(recent.text.includes('- first reply')).toBe(true)
+  })
+
+  test('codeExcerpts keeps the asked files\' text hunks, masked, and nothing else', async () => {
+    const file = (path: string, lines: readonly string[]): string => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, ...lines].join('\n')
+    const diff = [
+      file('hooks/a.ts', ['@@ -1,1 +1,2 @@', ' const a = 1', '+const API_KEY=sk-test-123456789abcdef']),
+      file('hooks/b.ts', ['@@ -1 +1 @@', '-old', '+new']),
+      file('.env', ['@@ -0,0 +1 @@', '+DATABASE_PASSWORD=hunter2-plain']),
+      'diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ',
+      file('__proto__', ['@@ -0,0 +1 @@', '+odd = 1']),
+      '',
+    ].join('\n')
+    const excerpts = codeExcerpts(diff, ['hooks/a.ts', '.env', 'logo.png', '__proto__', 'hooks/missing.ts'])
+    // hooks/b.ts was not asked for; .env is secret-shaped and logo.png has no text hunk.
+    expect(Object.keys(excerpts)).toEqual(['hooks/a.ts', '__proto__'])
+    expect(Object.getPrototypeOf(excerpts)).toBe(Object.prototype)
+    expect(excerpts['hooks/a.ts']?.startsWith('@@ -1,1 +1,2 @@\n const a = 1\n+const API_KEY=')).toBe(true)
+    expect(excerpts['hooks/a.ts']).not.toContain('sk-test-123456789abcdef')
+    expect(JSON.stringify(excerpts)).not.toContain('hunter2-plain')
+    expect(codeExcerpts('', ['hooks/a.ts'])).toEqual({})
+    expect(codeExcerpts(diff, [])).toEqual({})
+  })
+
+  test('codeExcerpts masks a long file only so far', async () => {
+    const lines = Array.from({ length: 4_000 }, (_, i) => `+const line${i} = ${i}`)
+    const diff = ['diff --git a/big.ts b/big.ts', '--- a/big.ts', '+++ b/big.ts', `@@ -0,0 +1,${lines.length} @@`, ...lines, ''].join('\n')
+    const excerpt = codeExcerpts(diff, ['big.ts'])['big.ts'] ?? ''
+    expect(excerpt.length > 2_000).toBe(true)
+    expect(excerpt.length <= 16_000).toBe(true)
+    expect(excerpt.startsWith('@@ -0,0 +1,4000 @@')).toBe(true)
   })
 })
