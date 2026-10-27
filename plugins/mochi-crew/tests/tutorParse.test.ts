@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { ChoiceQuestion, LineQuestion, TutorQuestion } from '../types'
+import { afterRound, FRESH_PROJECT, parseProgress, projectOf, withProject } from '../hooks/tutorProgress'
 import { MASK } from '../hooks/redact'
 import { CODE_LINE_MAX, isCodeDiff, parseHunks } from '../hooks/tutorCode'
 import type { CodeLookup } from '../hooks/tutorCode'
@@ -377,6 +378,37 @@ describe('tutor parse', () => {
       const outcome = parseV2(v2([line(), line(), line({ answer: 9 }), choice()]), () => [])
       expect(whyOf(outcome)).toBe('too-few')
       expect(outcome.isValid ? -1 : outcome.dropped).toBe(3)
+    })
+
+    test('parsed code cards reload from the saved deck unchanged', async () => {
+      const long = `const longName = ${'v'.repeat(CODE_LINE_MAX - 'const longName = '.length)}`
+      // 296 characters with six tabs inside: 302 once each tab is two spaces.
+      const tabbed = `const padded =\t\t\t\t\t${'w'.repeat(CODE_LINE_MAX - 4 - 'const padded ='.length - 5 - 2)}\t;`
+      const hunk = ['@@ -1,1 +1,5 @@', ' const run = makeRunner()', `+${long}`, `+${tabbed}`, '+const short = 1', '+const other = 2'].join('\n')
+      const lookup: CodeLookup = file => (file === 'hooks/register.tsx' ? parseHunks(hunk) : [])
+      const outcome = parseRound(v2([
+        choice({ at: { file: 'hooks/register.tsx', quote: 'const short = 1' } }),
+        // A quote of a full 300-character line: the card draws it one short, marker included, and so does the option.
+        line({ options: ['const run = makeRunner()', long], answer: 1, why: ['a', 'b'] }),
+        // Quoted with spaces, it fits; expanded for the button, it would not: dropped, not cut.
+        line({ options: ['const short = 1', tabbed.replaceAll('\t', ' ')], answer: 0, why: ['a', 'b'] }),
+        line({ options: ['const short = 1', 'const other = 2'], answer: 0, why: ['a', 'b'] }),
+        explain(),
+      ]), 'r7', ALLOWED, 5, 0, lookup)
+      expect(tabbed.length).toBe(296)
+      const questions = questionsOf(outcome)
+      expect(outcome.isValid && outcome.dropped).toBe(1)
+      expect(questions.map(question => question.kind)).toEqual(['choice', 'line', 'line', 'explain'])
+      expect(asLine(questions[1]).options[1]).toBe(long.slice(0, CODE_LINE_MAX - 1))
+      expect(asLine(questions[1]).code.diff).toContain(`+${long.slice(0, CODE_LINE_MAX - 1)}\n`)
+      const missed = afterRound(FRESH_PROJECT, {
+        id: 'r7', epoch: 1, focus: 'recent', source: 'digest', startedAt: 0, questions, index: 0,
+        answers: questions.map(question => ({ questionId: question.id, outcome: 'wrong', hasUsedHint: false })),
+        isHintShown: false, isRetry: false, chat: [], followUpsUsed: 0, usage: { calls: 1, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+      }, 1)
+      const store = withProject({ v: 1, projects: {} }, '/repo', missed)
+      const back = projectOf(parseProgress(JSON.parse(JSON.stringify(store))), '/repo')
+      expect(back.deck.map(held => held.question)).toEqual(questions)
     })
 
     test('anchoredFiles lists allowed anchors once, capped, and nothing for v1', async () => {
