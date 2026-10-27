@@ -42,8 +42,8 @@ import { askRequest, digestRequest, forkPrompt, gradeRequest } from './tutorProm
 import { FRESH_PROJECT, afterRound, dueCards, parseProgress, projectOf, withProject } from './tutorProgress'
 import type { TutorEvent } from './tutorRound'
 import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview, tutorStartRefusal, verdictOf } from './tutorRound'
-import type { TutorAction, TutorControl, TutorInputRow, TutorRow, TutorTone, TutorViewContext } from './tutorView'
-import { tutorHudLabel, tutorScreen } from './tutorView'
+import type { TutorAction, TutorControl, TutorFrameTone, TutorInputRow, TutorRow, TutorTone, TutorViewContext } from './tutorView'
+import { isListedControl, tutorHudLabel, tutorScreen } from './tutorView'
 import type { ProviderEnv, TtlEnv } from './meter'
 import { EMPTY_CACHE, addUsage, certainlyColdAfterMs, describeFailure, detectProvider, isCacheUnreported, isCertainlyCold, settleProvider } from './meter'
 import type { Alert } from './meterAlerts'
@@ -1064,6 +1064,14 @@ const REVIEW_ROUND_MAX = 5
 const TUTOR_TONES: Readonly<Record<TutorTone, { color?: string; dimColor?: boolean; bold?: boolean }>> = {
   ...METER_TONES,
   good: { color: THEME.good },
+}
+/** Border props for each card frame: the accent for a face, green or red for a verdict, dim otherwise. */
+const TUTOR_FRAMES: Readonly<Record<TutorFrameTone, { borderColor?: string; borderDimColor?: boolean }>> = {
+  front: { borderColor: ACCENT },
+  back: { borderColor: ACCENT, borderDimColor: true },
+  right: { borderColor: THEME.good },
+  wrong: { borderColor: THEME.alert },
+  neutral: { borderDimColor: true },
 }
 // Opened from the main pane, the tab usually does not get the keys (the person holds them there).
 const TUTOR_UNFOCUSED = 'Tutor tab is open: press ctrl+x tab, or click it.'
@@ -2795,7 +2803,7 @@ export const register: Register = (on, options) => {
     const state = await read($, tutor)
     const screen = tutorScreen(state, await readTutorView($, state))
     const elements = $.ui.resolve(e)
-    const { Box, Text, Button } = elements
+    const { Box, Text, Button, Code } = elements
     const line = (row: TutorRow) => (
       // Questions, reasons and replies wrap; the rest is cut, so the controls stay in view.
       <Text key={row.key} wrap={row.isWrapped ? 'wrap' : 'truncate-end'}>
@@ -2814,9 +2822,26 @@ export const register: Register = (on, options) => {
         onPress={() => void pressTutor($, item.action)}
       />
     )
-    // Options and starts read as a list, one per row; the other controls share a row.
-    const isListed = (item: TutorControl) =>
-      item.action.kind === 'choose' || item.action.kind === 'start' || item.action.kind === 'review' || item.action.kind === 'self-grade'
+    const card = screen.code
+    // The source is a window of a masked diff the plugin cut itself, never model text.
+    const code = card === undefined ? null : (
+      <Box key="code" flexDirection="column">
+        <Code key={card.key} format="diff" source={card.source} path={card.path} wrap="truncate-end" />
+        {card.caption !== undefined && <Text key="code-caption" dimColor wrap="truncate-end">{safeText(card.caption)}</Text>}
+      </Box>
+    )
+    // The code goes under the stem, or first in the body when there is none.
+    const stemAt = screen.body.findIndex(row => row.key === 'stem')
+    const body = code === null ? screen.body.map(line) : [
+      ...screen.body.slice(0, stemAt + 1).map(line),
+      code,
+      ...screen.body.slice(stemAt + 1).map(line),
+    ]
+    const tone = screen.frame === undefined ? undefined : TUTOR_FRAMES[screen.frame.tone]
+    // Only header, body and code are framed: the row budget counts the border and nothing else in it.
+    const content = tone === undefined
+      ? [...screen.header.map(line), ...body]
+      : [<Box key="frame" flexDirection="column" borderStyle="round" {...tone}>{screen.header.map(line)}{body}</Box>]
     const field = screen.input
     // Mobile has no Input: its screens never ask for one, and this keeps a stray one off it.
     // No `value` either: the ticker redraws every pane, and a value would wipe what is typed.
@@ -2833,11 +2858,11 @@ export const register: Register = (on, options) => {
       : null
     return (
       <Box flexDirection="column" alignItems="flex-start" paddingX={1}>
-        {screen.header.map(line)}
-        {screen.body.map(line)}
+        {content}
         {typing}
-        <Box flexDirection="column">{screen.controls.filter(isListed).map(control)}</Box>
-        <Box flexDirection="row" gap={2}>{screen.controls.filter(item => !isListed(item)).map(control)}</Box>
+        {/* Options and starts read as a list, one per row; the other controls share a row. */}
+        <Box flexDirection="column">{screen.controls.filter(isListedControl).map(control)}</Box>
+        <Box flexDirection="row" gap={2}>{screen.controls.filter(item => !isListedControl(item)).map(control)}</Box>
       </Box>
     )
   })

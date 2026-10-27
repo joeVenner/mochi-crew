@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Plugin, TestBody } from 'claude-code/testing'
+import { isCodeDiff } from '../hooks/tutorCode'
 
 type $ = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -1668,6 +1669,76 @@ describe('tutor races', () => {
     expect(record.completeRequests).toHaveLength(0)
     await clock.advance(1_000_000)
     await shows(ui, HOME)
+    await ui.unmount()
+  })
+})
+
+// ── code cards ──
+
+/** A stored card's code, as a round of an earlier session cut it: one hunk around line 2. */
+const CARD_DIFF = ['@@ -1,2 +1,3 @@', ' export const one = 1', '+export const capped = 16_000', ' export const two = 2'].join('\n')
+const CODE_STEM = 'Why is the digest capped at 16 000 characters?'
+const codeDeck = {
+  v: 1,
+  projects: {
+    '/repo': {
+      ...savedDeck.projects['/repo'],
+      deck: [{
+        box: 1,
+        dueRound: 2,
+        question: {
+          id: 'r1-q3',
+          kind: 'choice',
+          tag: 'why',
+          topic: 'digest cap',
+          prompt: CODE_STEM,
+          options: ['So one call stays cheap', 'Git cannot print more', 'The tab is narrow'],
+          answer: 0,
+          why: ['A digest round sends it whole.', 'It can.', 'The tab scrolls.'],
+          file: 'hooks/tutor.ts',
+          code: { file: 'hooks/tutor.ts', diff: CARD_DIFF, focusLine: 2 },
+        },
+      }],
+    },
+  },
+}
+
+/** The frame around a card's header and body, read back as plain props. */
+const frameOf = async (ui: { find: (q: { key: string }) => Promise<{ props: Record<string, unknown> } | undefined> }) => (await ui.find({ key: 'frame' }))?.props
+
+describe('tutor code cards', () => {
+  for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
+    test(`a stored code card is drawn as a diff inside a framed card (${surface})`, async ($, on) => {
+      mock.clock(on)
+      expect(isCodeDiff(CARD_DIFF)).toBe(true)
+      const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: codeDeck } })
+      await start($)
+      const ui = await tutorTab($, surface)
+      await ui.press({ key: 'review' })
+      await shows(ui, CODE_STEM)
+      const code = await ui.find({ type: 'Code' })
+      expect(code?.props).toMatchObject({ format: 'diff', source: CARD_DIFF, path: 'hooks/tutor.ts', wrap: 'truncate-end' })
+      await shows(ui, 'hooks/tutor.ts · line 2')
+      expect(await frameOf(ui)).toMatchObject({ borderStyle: 'round', borderColor: 'claude' })
+      // The options sit outside the frame, one per row.
+      await ui.press({ key: (await ui.find({ type: 'Button', text: 'So one call stays cheap' }))?.key ?? '' })
+      await shows(ui, '✓ right')
+      expect(await frameOf(ui)).toMatchObject({ borderStyle: 'round', borderColor: 'success' })
+      expect(await ui.find({ type: 'Code' })).toBeDefined()
+      expect(record.modelCalls).toBe(0)
+      await ui.unmount()
+    })
+  }
+
+  test('a short pane draws the code card as its caption only', async ($, on) => {
+    mock.clock(on)
+    engine(on, { saved: { tutorConsent: 2, tutorProgress: codeDeck } })
+    await start($)
+    await $.command.run(mochi('tutor'))
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor', 7) })
+    await ui.press({ key: 'review' })
+    await shows(ui, 'code: hooks/tutor.ts line 2 · make the pane taller to see it')
+    expect(await ui.find({ type: 'Code' })).toBeUndefined()
     await ui.unmount()
   })
 })
