@@ -54,14 +54,18 @@ export const isTutorTag = (value: unknown): value is TutorTag => TUTOR_TAGS.some
 
 const isRecord = (value: unknown): value is JsonRecord => typeof value === 'object' && value !== null && !Array.isArray(value)
 
+/** Spaces a tab becomes: models indent code with tabs, which safeText would turn into `?`. */
+const TAB_SPACES = '  '
+
 /**
  * Model text made safe to keep and draw: secrets masked first (so a cut never leaves half a
- * token), then every control character replaced per line, keeping the line breaks, then trimmed.
+ * token), then tabs expanded and every other control character replaced per line, keeping the
+ * line breaks, then trimmed. Expanding before the trim lets a tab-only reply count as blank.
  */
 export const cleanModelText = (text: string): string =>
   redactSecrets(text)
     .split(/\r?\n/)
-    .map(line => safeText(line))
+    .map(line => safeText(line.replaceAll('\t', TAB_SPACES)))
     .join('\n')
     .trim()
 

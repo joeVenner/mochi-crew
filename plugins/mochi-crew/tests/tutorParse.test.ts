@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { ChoiceQuestion, TutorQuestion } from '../types'
 import { MASK } from '../hooks/redact'
-import { MAX_REPLY_CHARS, QUIZ_CAPS, extractJsonObject, parseGrade, parseRound, shuffleChoice } from '../hooks/tutorParse'
+import { MAX_REPLY_CHARS, QUIZ_CAPS, cleanModelText, extractJsonObject, parseGrade, parseRound, shuffleChoice } from '../hooks/tutorParse'
 import type { ParseOutcome } from '../hooks/tutorParse'
 
 type RawQuestion = Readonly<Record<string, unknown>>
@@ -181,6 +181,15 @@ describe('tutor parse', () => {
     expect(bidi?.prompt).toBe('Why ?evil? and\nthis?one?')
     expect(question?.topic).toBe(`key ${MASK}`)
     expect(question?.topic.includes('sk-test')).toBe(false)
+  })
+
+  test('cleanModelText expands tabs instead of masking them', async () => {
+    expect(cleanModelText('if (ok) {\n\treturn 1\n}')).toBe('if (ok) {\n  return 1\n}')
+    expect(cleanModelText('a\t\tb')).toBe('a    b')
+    // A reply of only tabs and spaces is blank, so the caller treats it as no reply.
+    expect(cleanModelText(' \t\n\t\t ')).toBe('')
+    // Other control characters are still replaced next to an expanded tab.
+    expect(cleanModelText('\t\u0007bell')).toBe('?bell')
   })
 
   test('keeps only the wanted number', async () => {

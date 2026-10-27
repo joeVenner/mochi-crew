@@ -1266,7 +1266,7 @@ describe('tutor follow-ups and model text', () => {
 
   test('a failed follow-up says so and keeps the count', async ($, on) => {
     mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))], completes: [failing(500, 'server_error'), reply(' \n  ', ASK_CALL), reply(ASK_REPLY, ASK_CALL)] })
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(5))], completes: [failing(500, 'server_error'), reply(' \n\t\t ', ASK_CALL), reply(ASK_REPLY, ASK_CALL)] })
     await start($)
     await warmUp($)
     const ui = await tutorTab($)
@@ -1276,7 +1276,7 @@ describe('tutor follow-ups and model text', () => {
     await ui.input({ key: await fieldKey(ui), text: 'why?' })
     expect(record.toasts).toEqual(["Mochi couldn't answer that one."])
     await shows(ui, '(2 left)')
-    // A blank reply is no reply either.
+    // A blank reply, tabs included, is no reply either and costs no follow-up.
     await ui.input({ key: await fieldKey(ui), text: 'why?' })
     expect(record.toasts).toHaveLength(2)
     await shows(ui, '(2 left)')
