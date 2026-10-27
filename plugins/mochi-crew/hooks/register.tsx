@@ -1497,6 +1497,9 @@ const gatherDigest = async ($: EngineInterface, root: string, focus: TutorFocus,
 /** What a start asked for: the round's first epoch, its focus and plan, the learner it is pitched at. */
 type RoundOrder = { readonly epoch: number; readonly focus: TutorFocus; readonly plan: TutorPlan; readonly project: TutorProject; readonly at: number }
 
+/** The epoch a round being written waits under now; mutable, since a fallback to the digest moves it on. */
+type RoundHold = { epoch: number }
+
 /**
  * Applies a call's event only while the screen waiting on that call is up, so a stopped round,
  * grade or follow-up never paints over what replaced it. True when it was applied.
@@ -1525,27 +1528,26 @@ const logInvalid = ($: EngineInterface, parsed: Extract<ParseOutcome, { isValid:
  * the digest at most once; the digest never retries. Every continuation checks that the screen
  * still waits on its epoch: a stopped round's reply is dropped, and only its spend is kept.
  */
-const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<void> => {
+const writeQuestions = async ($: EngineInterface, order: RoundOrder, hold: RoundHold): Promise<void> => {
   const { focus, project, at } = order
-  let epoch = order.epoch
   let spent: TutorUsage = EMPTY_USAGE
   const root = await $.session.root()
   const touched = await read($, treeTouched)
   const review = dueCards(project, 1)[0]?.question
   const ctx = { focus, level: project.level, count: ROUND_SIZE - (review === undefined ? 0 : 1), misses: project.recentMisses, mastered: project.mastered }
   // Unique across sessions: a replayed card keeps its own id, which a new question must never share.
-  const roundId = (): string => `round-${at}-${epoch}`
+  const roundId = (): string => `round-${at}-${hold.epoch}`
   const fail = async (failure: TutorFailure, canTryDigest: boolean): Promise<void> => {
-    await showReply($, epoch, { kind: 'failed', failure, canTryDigest })
+    await showReply($, hold.epoch, { kind: 'failed', failure, canTryDigest })
   }
   const show = async (source: 'fork' | 'digest', questions: readonly TutorQuestion[]): Promise<void> => {
     const round: TutorRound = {
       id: roundId(),
-      epoch,
+      epoch: hold.epoch,
       focus,
       source,
       startedAt: at,
-      questions: spliceReview(questions, review, epoch),
+      questions: spliceReview(questions, review, hold.epoch),
       index: 0,
       answers: [],
       isHintShown: false,
@@ -1554,22 +1556,22 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
       followUpsUsed: 0,
       usage: spent,
     }
-    if (await showReply($, epoch, { kind: 'loaded', round })) await say($, 'tutor-start', '')
+    if (await showReply($, hold.epoch, { kind: 'loaded', round })) await say($, 'tutor-start', '')
   }
   tutorDigest = null
 
   if (order.plan.source === 'fork') {
     const files = ownTouched(touched)
     const commits = (await tutorGit($, root, logArgs())) ?? ''
-    if (!(await isLiveCall($, epoch))) return dropStale($)
+    if (!(await isLiveCall($, hold.epoch))) return dropStale($)
     const waited = await runFork($, forkPrompt({ ...ctx, files, commits }))
-    if (!(await isLiveCall($, epoch))) return dropStale($)
+    if (!(await isLiveCall($, hold.epoch))) return dropStale($)
     if (waited.kind === 'result') {
       if ('usage' in waited.result) spent = addTutorUsage(spent, waited.result.usage)
       const next = afterFork(waited.result)
       if (next.kind === 'error') return fail(next.failure, true)
       if (next.kind === 'parse') {
-        const parsed = parseRound(next.text, roundId(), new Set(files), ctx.count, epoch)
+        const parsed = parseRound(next.text, roundId(), new Set(files), ctx.count, hold.epoch)
         if (parsed.isValid) return show('fork', parsed.questions)
         logInvalid($, parsed)
       }
@@ -1579,25 +1581,25 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
     const now = await $.clock.now()
     // Once, under a new epoch, so the fork's late reply is stale and the digest's round is current.
     const fellBack = await claimTutor($, (current, next) =>
-      waitingEpoch(current) === epoch ? { kind: 'loading', epoch: next, focus, source: 'digest', at: now, note: TUTOR_FALLBACK_NOTE } : undefined,
+      waitingEpoch(current) === hold.epoch ? { kind: 'loading', epoch: next, focus, source: 'digest', at: now, note: TUTOR_FALLBACK_NOTE } : undefined,
     )
     if (fellBack.epoch === undefined) return dropStale($)
-    epoch = fellBack.epoch
+    hold.epoch = fellBack.epoch
     await focusTutor($, fellBack.state)
   }
 
   const digest = await gatherDigest($, root, focus, touched)
-  if (!(await isLiveCall($, epoch))) return dropStale($)
+  if (!(await isLiveCall($, hold.epoch))) return dropStale($)
   // Nothing in git or the transcript, and nothing forked: no call is made (B.3).
   if (digest.isEmpty) return fail({ kind: 'nothing-to-quiz' }, false)
   tutorDigest = digest
-  const called = await runComplete($, digestRequest({ ...ctx, files: digest.files, commits: '' }, digest, tutorConfig), epoch)
-  if (called.kind === 'stale' || !(await isLiveCall($, epoch))) return dropStale($)
+  const called = await runComplete($, digestRequest({ ...ctx, files: digest.files, commits: '' }, digest, tutorConfig), hold.epoch)
+  if (called.kind === 'stale' || !(await isLiveCall($, hold.epoch))) return dropStale($)
   if (called.kind === 'refused') return fail({ kind: 'model-refused', model: tutorConfig.model }, false)
   spent = addTutorUsage(spent, called.result.usage)
   const next = afterDigest(called.result)
   if (next.kind === 'error') return fail(next.failure, false)
-  const parsed = parseRound(next.text, roundId(), new Set(digest.files), ctx.count, epoch)
+  const parsed = parseRound(next.text, roundId(), new Set(digest.files), ctx.count, hold.epoch)
   if (!parsed.isValid) {
     logInvalid($, parsed)
     return fail({ kind: 'bad-reply', why: parsed.why }, false)
@@ -1619,17 +1621,19 @@ const withSpinner = async ($: EngineInterface, work: () => Promise<void>): Promi
 }
 
 /** Writes a round with the loading spinner turning; a round that throws goes back Home rather than spin on (logged). */
-const writeRound = async ($: EngineInterface, order: RoundOrder): Promise<void> =>
-  withSpinner($, async () => {
+const writeRound = async ($: EngineInterface, order: RoundOrder): Promise<void> => {
+  const hold: RoundHold = { epoch: order.epoch }
+  return withSpinner($, async () => {
     try {
-      await writeQuestions($, order)
+      await writeQuestions($, order, hold)
     } catch (error: unknown) {
       $.ui.log(`mochi-crew: tutor could not write a round: ${String(error)}`, { to: 'debug' })
-      // Its own loading screen only (a fallback's epoch is above the first); a newer round cannot start while one shows.
-      await update($, tutor, current => (current.phase === 'loading' && current.epoch >= order.epoch ? applyTutor(current, { kind: 'cancel' }) : current))
+      // Its own loading screen only, by the epoch it holds: a round started after this one was stopped has a higher one.
+      await update($, tutor, current => (current.phase === 'loading' && current.epoch === hold.epoch ? applyTutor(current, { kind: 'cancel' }) : current))
       $.ui.invalidate('ui.render')
     }
   })
+}
 
 /**
  * Starts a round on `focus`, asking for consent first. One call runs at a time: a start while

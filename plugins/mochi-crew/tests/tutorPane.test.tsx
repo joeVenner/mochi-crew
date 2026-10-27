@@ -77,7 +77,10 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
     completeRequests: [] as { model: string; prompt: string; system?: string }[],
     gitCalls: [] as (readonly string[])[],
     reads: [] as string[],
+    logs: [] as string[],
     place: tab,
+    /** When set, the next `session.root` waits this long on the mocked clock and then throws. */
+    rootFault: undefined as number | undefined,
     /** How long each git call takes, on the mocked clock. */
     gitDelay: 0,
   }
@@ -86,7 +89,10 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
     record.commands.push(e.name)
     return { value: { command: e.name } }
   })
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', ($, e) => {
+    record.logs.push(e.text)
+    return { value: undefined }
+  })
   on('ui.toast', ($, e) => {
     record.toasts.push(e.text)
     return { value: undefined }
@@ -116,7 +122,13 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('session.id', () => ({ value: 'test-session' }))
   on('turn.complete', ($, e) => ({ text: e.answer, usage: e.usage }))
-  on('session.root', () => ({ value: '/repo' }))
+  on('session.root', async () => {
+    const fault = record.rootFault
+    if (fault === undefined) return { value: '/repo' }
+    record.rootFault = undefined
+    if (clock !== undefined) await clock.sleep(fault)
+    throw new Error('the root moved')
+  })
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.authorize', () => ({ value: { handle: 'test-handle', kind: 'api-key' as const } }))
   on('session.messages', () => ({ value: messages as never }))
@@ -1523,6 +1535,30 @@ describe('tutor races', () => {
     expect(record.forkPrompts).toHaveLength(0)
     expect(record.modelCalls).toBe(0)
     await shows(ui, HOME)
+    await ui.unmount()
+  })
+
+  test('a stopped round that fails later leaves the next round alone', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 20_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    // The first round's first read fails, but only once it was stopped and a second round began.
+    record.rootFault = 10_000
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, 'Mochi is reading the diff…')
+    await ui.press({ key: 'cancel' })
+    await shows(ui, 'cancelled')
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, 'Mochi is reading the diff…')
+    await clock.advance(10_000)
+    expect(record.logs.some(line => line.includes('could not write a round'))).toBe(true)
+    await shows(ui, 'Mochi is reading the diff…')
+    await lacks(ui, 'cancelled')
+    await clock.advance(10_000)
+    await shows(ui, FIRST_STEM)
+    expect(record.completeRequests).toHaveLength(1)
     await ui.unmount()
   })
 })
