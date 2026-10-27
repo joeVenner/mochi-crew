@@ -841,6 +841,9 @@ const UNKNOWN_PROVIDER: Provider = 'unknown'
 const meterMeasure = atom({ plugin: 'mochi-crew', key: 'meterMeasure' } as const, NO_MEASURE)
 const meterCache = atom({ plugin: 'mochi-crew', key: 'meterCache' } as const, EMPTY_CACHE)
 const meterModel = atom({ plugin: 'mochi-crew', key: 'meterModel' } as const, NO_MODEL)
+// The model as of the last main-thread turn: a model switched since then has its own cache, so
+// the tutor must not count on the chat's cache being warm.
+const meterResponseModel = atom({ plugin: 'mochi-crew', key: 'meterResponseModel' } as const, NO_MODEL)
 const meterProvider = atom({ plugin: 'mochi-crew', key: 'meterProvider' } as const, UNKNOWN_PROVIDER)
 const meterLastResponseAt = atom({ plugin: 'mochi-crew', key: 'meterLastResponseAt' } as const, NO_RESPONSE)
 const meterAlerts = atom({ plugin: 'mochi-crew', key: 'meterAlerts' } as const, NO_ALERTS)
@@ -910,6 +913,7 @@ const refreshModel = async ($: EngineInterface): Promise<void> => {
 const resetConversation = async ($: EngineInterface): Promise<void> => {
   await update($, meterCache, (): CacheTotals => EMPTY_CACHE)
   await update($, meterLastResponseAt, (): number | null => NO_RESPONSE)
+  await update($, meterResponseModel, (): string | null => NO_MODEL)
   await update($, meterAlerts, (): readonly string[] => NO_ALERTS)
   await update($, meterMeasure, (): Measure | null => NO_MEASURE)
 }
@@ -1008,6 +1012,10 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
     const usage = e.usage
     if (usage !== undefined) await update($, meterCache, totals => addUsage(totals, usage))
     await refreshModel($)
+    // Read back rather than taken from the turn's usage: the tutor compares it with `meterModel`,
+    // so both must be the same spelling of the id.
+    const answeredBy = await read($, meterModel)
+    await update($, meterResponseModel, (): string | null => answeredBy)
     await raiseAlerts($)
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: meter could not count a turn: ${String(error)}`, { to: 'debug' })

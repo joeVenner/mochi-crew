@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import type { Plugin, TestBody } from 'claude-code/testing'
 
 type $ = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -54,6 +54,19 @@ const turnEvent = (read: number, write: number, input: number, agentId?: string)
   ...(agentId === undefined ? {} : { agentId }),
   usage: { model: 'claude-opus-5-5', cache_read_input_tokens: read, cache_creation_input_tokens: write, input_tokens: input, output_tokens: 10 },
 })
+
+/**
+ * A second plugin that reads Mochi's answering model back through `/probe`, as any plugin may read
+ * another's state; the test's own `$` has no state noun.
+ */
+const PROBE: Plugin = {
+  name: 'probe',
+  register(on) {
+    on('command.run', { command: 'probe' }, async $ => ({
+      text: JSON.stringify((await $.state.get({ plugin: 'mochi-crew', key: 'meterResponseModel' })).value ?? null),
+    }))
+  },
+}
 
 const shows = async (ui: Finder, text: string) => expect(await ui.find({ type: 'Text', text })).toBeDefined()
 const lacks = async (ui: Finder, text: string) => expect(await ui.find({ type: 'Text', text })).toBeUndefined()
@@ -204,6 +217,38 @@ describe('session meter in the pane', () => {
     const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...PANE, props: paneProps() })
     await lacks(ui, 'opus 5.5')
     await ui.unmount()
+  })
+
+  test('the answering model is kept from the last main turn until a /clear', { plugins: [PROBE] }, async ($, on) => {
+    mock.clock(on)
+    let model = 'claude-opus-5-5'
+    engine(on, { model: () => model })
+    await start($)
+    const answeredBy = async (): Promise<unknown> => JSON.parse((await $.command.run({ ...mascot(''), command: 'probe' })).text ?? 'undefined')
+    // The meter counts a turn just after the turn's hook returns; each command run lets it settle.
+    const becomes = async (expected: string | null) => {
+      for (let attempt = 0; attempt < 50 && (await answeredBy()) !== expected; attempt += 1) await $.command.run(mascot('meter'))
+      expect(await answeredBy()).toBe(expected)
+    }
+    expect(await answeredBy()).toBeNull()
+    await $.turn.complete(turnEvent(10, 10, 10))
+    await becomes('claude-opus-5-5')
+    // A /model switch moves the session's model, never the one that answered.
+    model = 'claude-sonnet-5'
+    await $.session.measure(measureEvent())
+    // The meter already reads the new model (its row says so) while the answering one stays put.
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...PANE, props: paneProps() })
+    await shows(ui, 'sonnet 5')
+    await ui.unmount()
+    expect(await answeredBy()).toBe('claude-opus-5-5')
+    // A subagent's turn answers for the subagent, not for the conversation.
+    await $.turn.complete(turnEvent(20, 20, 20, 'agent-1'))
+    await $.command.run(mascot('meter'))
+    expect(await answeredBy()).toBe('claude-opus-5-5')
+    await $.turn.complete(turnEvent(30, 30, 30))
+    await becomes('claude-sonnet-5')
+    await $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } })
+    expect(await answeredBy()).toBeNull()
   })
 
   test('a failing meter read never stops Mochi from starting', async ($, on) => {
