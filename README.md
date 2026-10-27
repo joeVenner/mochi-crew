@@ -533,8 +533,9 @@ Commands:
   excerpt the digest already sent. On a fork round, when the reply points at files (at most 5, all
   edited in this session in the project itself), Mochi runs one more local `git diff` for just those
   files, in the same two steps, with the same rename check, masking, 1 MB cap and timeout as the
-  digest. Its output is only drawn: it is never sent, follow-ups included. If git fails, the
-  questions stay and lose only their code.
+  digest. Its output is only drawn and never sent, except that a follow-up on a which-line
+  question sends that question's options, the lines the model itself quoted, as the card shows
+  them. If git fails, the questions stay and lose only their code.
 - **Files meant for secrets are never diffed or read.** They are matched by name, in any folder and
   ignoring case: `.env*`, `*secret*`, `*credential*`, private keys (`id_rsa*`, `id_dsa*`,
   `id_ecdsa*`, `id_ed25519*`, `*.key`, `*.pem`, `*.p8`, `*.ppk`), certificate and key stores
