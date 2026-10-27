@@ -20,6 +20,17 @@ const CASES: ReadonlyArray<readonly [string, string, string]> = [
   ['curl -u', 'curl -u admin:hunter2 https://x', `curl -u admin:${MASK} https://x`],
   ['json password', `curl -d '{"user":"a","password":"abc"}' https://x`, `curl -d '{"user":"a","password":"${MASK}"}' https://x`],
   ['jwt', 'curl -d eyJhbGciOiJI.eyJzdWIiOiIx.SflKxwRJSMeKKF2Q', `curl -d ${MASK}`],
+  ['stripe secret key', 'stripe login --api-key sk_live_1234567890abcdef', `stripe login --api-key ${MASK}`],
+  ['stripe restricted key', 'const key = rk_test_1234567890abcdef', `const key = ${MASK}`],
+  ['google api key', 'const maps = new Maps("AIzaSyA-dummyDummyDummyDummyDummy123456")', `const maps = new Maps("${MASK}")`],
+  ['yaml password', 'password: hunter2', `password: ${MASK}`],
+  ['indented yaml key in a diff', '+  db_password: hunter2 # prod', `+  db_password: ${MASK} # prod`],
+  ['yaml list item', '- auth_token: abc123', `- auth_token: ${MASK}`],
+  ['quoted yaml value', "  client_secret: 'abc def'", `  client_secret: '${MASK}'`],
+  ['spaced assignment', 'const apiKey = "abc123"', `const apiKey = "${MASK}"`],
+  ['unquoted spaced assignment', 'aws_secret_access_key = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY', `aws_secret_access_key = ${MASK}`],
+  ['quoted name and value', `{"api_key" : 'abc123'}`, `{"api_key" : '${MASK}'}`],
+  ['object literal key', "connect({ password: 'pa55word' })", `connect({ password: '${MASK}' })`],
 ]
 
 describe('redact', () => {
@@ -32,6 +43,24 @@ describe('redact', () => {
   test('ordinary commands pass through unchanged', async () => {
     for (const command of ['git checkout feature/sk-add-user-avatar-upload', 'echo bearer authentication', 'npm test', 'git log --oneline -5', 'rg "token" src', 'ls ~/.ssh', 'git show 3f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f', 'cat package.json', 'echo $HOME']) {
       expect(redactSecrets(command)).toBe(command)
+    }
+  })
+
+  test('code that only names a secret passes through unchanged', async () => {
+    for (const code of [
+      'apiKey: string;', '  token: Token;', 'readonly password: string', 'if (token === undefined) return', 'const ok = token == other',
+      'const onToken = (token) => token', 'const apiKey = process.env.API_KEY', 'password = getPassword()', 'author: "Ada"', 'primaryKey: true',
+      'keys = [1, 2]', 'const token = null', 'connect({ password, user })',
+    ]) {
+      expect(redactSecrets(code)).toBe(code)
+    }
+  })
+
+  test('a long line of names and separators is redacted fast', async () => {
+    for (const huge of ['token.'.repeat(1_000), 'a_key '.repeat(1_000), `password:${' '.repeat(5_000)}`, '"a"'.repeat(2_000), 'key=key='.repeat(1_000)]) {
+      const started = Date.now()
+      redactSecrets(huge)
+      expect(Date.now() - started).toBeLessThan(50)
     }
   })
 
