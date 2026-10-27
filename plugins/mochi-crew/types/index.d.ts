@@ -325,6 +325,27 @@ export type TutorRound = {
 
 export type TutorLevel = 1 | 2 | 3
 
+/** Tutor: how well a flashcard was recalled. */
+export type FlashRating = 'again' | 'hard' | 'good'
+
+/** Tutor: one flashcard rated, and whether it was due when it was. */
+export type FlashRated = { readonly id: string; readonly rating: FlashRating; readonly wasDue: boolean }
+
+/**
+ * Tutor: a flip-card session over the review deck. `ids` is the deck as it stood at the start; a
+ * card gone from the deck since is skipped. `focus` is the Home it goes back to, and `xpLeft`
+ * the conversation's flashcard XP still unearned when it began.
+ */
+export type TutorFlash = {
+  readonly ids: readonly string[]
+  readonly index: number
+  readonly isFlipped: boolean
+  readonly ratings: readonly FlashRated[]
+  readonly startedAt: number
+  readonly focus: TutorFocus
+  readonly xpLeft: number
+}
+
 /** Tutor: the tab's screen; transitions happen in handlers, never while drawing. */
 export type TutorState =
   | { readonly phase: 'closed' }
@@ -335,6 +356,8 @@ export type TutorState =
   | { readonly phase: 'grading' | 'asking'; readonly round: TutorRound; readonly epoch: number; readonly since: number }
   | { readonly phase: 'summary'; readonly round: TutorRound; readonly xp: number; readonly levelBefore: TutorLevel; readonly levelAfter: TutorLevel; readonly wasForkMiss: boolean }
   | { readonly phase: 'error'; readonly failure: TutorFailure; readonly focus: TutorFocus; readonly canTryDigest: boolean }
+  | { readonly phase: 'cards'; readonly flash: TutorFlash }
+  | { readonly phase: 'cards-done'; readonly flash: TutorFlash; readonly xp: number }
 
 /** Tutor: a missed question waiting to be asked again, `dueRound` counted in the project's rounds. */
 export type TutorCard = { readonly question: TutorQuestion; readonly box: 1 | 2 | 3; readonly dueRound: number }
@@ -353,8 +376,8 @@ export type TutorProject = {
 /** Tutor: every project's progress as saved in the store, keyed by project root. */
 export type TutorProgressStore = { readonly v: 1; readonly projects: Readonly<Record<string, TutorProject>> }
 
-/** Tutor: this conversation's rounds and spend (not saved). */
-export type TutorSession = { readonly rounds: number; readonly usage: TutorUsage; readonly isForkSuspect: boolean }
+/** Tutor: this conversation's rounds and spend, and the flashcard XP it earned (not saved). */
+export type TutorSession = { readonly rounds: number; readonly usage: TutorUsage; readonly isForkSuspect: boolean; readonly flashXp: number }
 
 declare module 'claude-code' {
   interface PluginState {

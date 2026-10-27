@@ -739,5 +739,7 @@ export const tutorScreen = (state: TutorState, ctx: TutorViewContext): TutorScre
     case 'grading': return gradingScreen(state, ctx)
     case 'summary': return summaryScreen(state, ctx)
     case 'error': return errorScreen(state, ctx)
+    case 'cards':
+    case 'cards-done': return emptyRoundScreen(ctx)
   }
 }
