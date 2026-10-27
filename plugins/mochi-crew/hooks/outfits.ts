@@ -56,10 +56,10 @@ export const isOutfitName = (value: unknown): value is OutfitName =>
   typeof value === 'string' && Object.hasOwn(OUTFITS, value)
 
 /** What `/mascot tutor [action]` asks the tutor to do; `open` is the bare verb. */
-export type TutorVerb = 'open' | 'start' | 'digest' | 'review' | 'stop' | 'reset'
+export type TutorVerb = 'open' | 'start' | 'digest' | 'review' | 'cards' | 'stop' | 'reset'
 
 /** The actions the unknown-action error suggests, in order; `open` is left out because a bare `tutor` already means it. */
-export const TUTOR_VERBS: readonly Exclude<TutorVerb, 'open'>[] = ['start', 'digest', 'review', 'stop', 'reset']
+export const TUTOR_VERBS: readonly Exclude<TutorVerb, 'open'>[] = ['start', 'digest', 'review', 'cards', 'stop', 'reset']
 
 const isTutorVerb = (value: string): value is Exclude<TutorVerb, 'open'> =>
   (TUTOR_VERBS as readonly string[]).includes(value)
@@ -81,7 +81,7 @@ export type MascotCommand =
   | { kind: 'tutor'; action: TutorVerb }
   | { kind: 'error'; message: string }
 
-export const MASCOT_USAGE = 'usage: /mascot [pet | feed | dance | journal | missions | achievements | meter | files [on|off] | tutor [start|digest|review|stop|reset] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]'
+export const MASCOT_USAGE = 'usage: /mascot [pet | feed | dance | journal | missions | achievements | meter | files [on|off] | tutor [start|digest|review|cards|stop|reset] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]'
 
 /** Parses `/mascot` arguments; never throws, an unknown request is an `error` with usage. */
 export const parseMascotCommand = (args: string): MascotCommand => {
@@ -96,7 +96,7 @@ export const parseMascotCommand = (args: string): MascotCommand => {
   if (verb === 'files' && value === undefined) return { kind: 'files' }
   if (verb === 'files' && (value === 'on' || value === 'off')) return { kind: 'files', isOn: value === 'on' }
   if (verb === 'tutor') {
-    // D.2 accepts any of the six actions; `open` is also what the bare verb means, so both open the tab.
+    // D.2 accepts any of the seven actions; `open` is also what the bare verb means, so both open the tab.
     if (value === undefined || value === 'open') return { kind: 'tutor', action: 'open' }
     if (isTutorVerb(value)) return { kind: 'tutor', action: value }
     return { kind: 'error', message: `unknown tutor action "${value}"; try: ${TUTOR_VERBS.join(', ')}` }

@@ -442,7 +442,7 @@ describe('tutor tab', () => {
     mock.clock(on)
     const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
     await start($, false)
-    for (const args of ['tutor', 'tutor start', 'tutor digest', 'tutor review', 'tutor stop', 'tutor reset']) {
+    for (const args of ['tutor', 'tutor start', 'tutor digest', 'tutor review', 'tutor cards', 'tutor stop', 'tutor reset']) {
       expect((await $.command.run(mochi(args))).text).toBe('Tutor needs an interactive session.')
     }
     expect(record.opened.some(pane => pane.id === 'mochi-tutor')).toBe(false)
@@ -2174,6 +2174,67 @@ describe('tutor flashcards', () => {
       await ui.press({ key: 'home' })
     }
     expect((store.get('stats') as { xp: number }).xp).toBe(10)
+    await ui.unmount()
+  })
+
+  test('/mochi tutor cards opens a session, or says the deck is empty without opening the tab', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 } })
+    await start($)
+    expect((await $.command.run(mochi('tutor cards'))).text).toBe('No flashcards yet: play a round first, or press k on an answer to keep it.')
+    expect((await $.command.run(mochi('tutor cards', 'mascot'))).text).toBe('No flashcards yet: play a round first, or press k on an answer to keep it.')
+    expect(record.opened.some(pane => pane.id === 'mochi-tutor')).toBe(false)
+    const ui = await tutorTab($)
+    await shows(ui, EMPTY_HOME)
+    expect(await ui.find({ type: 'Button', key: 'cards' })).toBeUndefined()
+    await ui.unmount()
+    expect(record.modelCalls).toBe(0)
+  })
+
+  test('/mochi tutor cards opens a session from a closed tab with no model call', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: flashStore } })
+    await start($)
+    expect((await $.command.run(mochi('tutor cards'))).text).toBe('Flashcards open in the Tutor tab.')
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
+    await shows(ui, 'card 1/3')
+    // Asked again mid-session, the session stays where it is.
+    await ui.press({ key: 'flip' })
+    expect((await $.command.run(mochi('tutor cards'))).text).toBe('Flashcards open in the Tutor tab.')
+    await hasButton(ui, 'rate:good')
+    expect(record.modelCalls).toBe(0)
+    await ui.unmount()
+  })
+
+  test('/mochi tutor cards waits on the notice when consent is missing, and says only that the tab opened', async ($, on) => {
+    mock.clock(on)
+    engine(on, { saved: { tutorProgress: flashStore } })
+    await start($)
+    expect((await $.command.run(mochi('tutor cards'))).text).toBe('Tutor opened.')
+    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
+    await shows(ui, NOTICE)
+    await ui.unmount()
+  })
+
+  test('flashcards are refused mid-round, and a round is refused mid-session', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: savedDeck } })
+    await start($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'review' })
+    await shows(ui, STEM)
+    expect((await $.command.run(mochi('tutor cards'))).text).toBe('Tutor opened.')
+    expect(record.toasts).toContain('Finish or end this round first.')
+    await shows(ui, STEM)
+    await lacks(ui, 'card 1/1')
+    await ui.press({ key: (await ui.find({ type: 'Button', text: 'So a refresh never holds index.lock' }))?.key ?? '' })
+    await ui.press({ key: 'next' })
+    await ui.press({ key: 'cards' })
+    await shows(ui, 'card 1/1')
+    expect((await $.command.run(mochi('tutor start'))).text).toBe('Tutor opened.')
+    expect(record.toasts).toContain('Finish or end the flashcards first.')
+    await shows(ui, 'card 1/1')
+    expect(record.modelCalls).toBe(0)
     await ui.unmount()
   })
 

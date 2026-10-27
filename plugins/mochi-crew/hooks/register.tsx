@@ -2225,6 +2225,14 @@ const runTutorCommand = async ($: EngineInterface, verb: TutorVerb): Promise<str
       toastTutorHint($, await openTutor($))
       return (await startReview($)) ? 'Tutor round starting in its tab.' : 'Tutor opened.'
     }
+    case 'cards': {
+      await loadTutor($)
+      // Checked before the tab opens, as a review is: an empty deck has nothing to show there.
+      if (((await read($, tutorProject)) ?? FRESH_PROJECT).deck.length === 0) return FLASH_REPLIES.empty
+      toastTutorHint($, await openTutor($))
+      const outcome = await openCards($)
+      return outcome === 'opened' ? FLASH_REPLIES.opened : outcome === 'empty' ? FLASH_REPLIES.empty : 'Tutor opened.'
+    }
     case 'stop':
       await cancelTutor($)
       return 'Tutor stopped.'
@@ -2621,7 +2629,7 @@ export const register: Register = (on, options) => {
       await $.command.register({
         name,
         description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, quiz you on the project, set the session badge, change outfit, toggle sound',
-        argumentHint: '[journal | missions | achievements | meter | files [on|off] | tutor [start|digest|review|stop|reset] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]',
+        argumentHint: '[journal | missions | achievements | meter | files [on|off] | tutor [start|digest|review|cards|stop|reset] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]',
       })
     }
     void $.ui.open({ id: PANE, title: TITLE })

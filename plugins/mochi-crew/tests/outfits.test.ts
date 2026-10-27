@@ -45,18 +45,18 @@ describe('/mascot arguments', () => {
 
   test('parses tutor actions and rejects unknown ones', async () => {
     expect(parseMascotCommand('tutor')).toEqual({ kind: 'tutor', action: 'open' })
-    for (const action of ['start', 'digest', 'review', 'stop', 'reset'] as const) {
+    for (const action of ['start', 'digest', 'review', 'cards', 'stop', 'reset'] as const) {
       expect(parseMascotCommand(`tutor ${action}`)).toEqual({ kind: 'tutor', action })
     }
     expect(parseMascotCommand('TUTOR Start')).toEqual({ kind: 'tutor', action: 'start' })
     expect(parseMascotCommand('tutor quiz')).toEqual({
       kind: 'error',
-      message: 'unknown tutor action "quiz"; try: start, digest, review, stop, reset',
+      message: 'unknown tutor action "quiz"; try: start, digest, review, cards, stop, reset',
     })
     expect(parseMascotCommand('tutor open')).toEqual({ kind: 'tutor', action: 'open' })
     expect(parseMascotCommand('tutor  ')).toEqual({ kind: 'tutor', action: 'open' })
     expect(parseMascotCommand('tutor start now')).toEqual({ kind: 'error', message: MASCOT_USAGE })
-    expect(MASCOT_USAGE).toContain('tutor')
+    expect(MASCOT_USAGE).toContain('tutor [start|digest|review|cards|stop|reset]')
   })
 
   test('isOutfitName rejects non-outfits, including prototype keys', async () => {
