@@ -300,6 +300,17 @@ const storedQuestion = (question: TutorQuestion): TutorQuestion => {
 }
 
 /**
+ * A card after a clean answer to it: up one box, back in 3 rounds from box 2 and 6 from box 3,
+ * counted from `rounds` played; null once it is answered cleanly in box 3, as it then retires
+ * into `mastered`. The one place the box schedule lives, so rounds and flashcards agree.
+ */
+export const promoteCard = (card: TutorCard, rounds: number): TutorCard | null => {
+  if (card.box === 3) return null
+  const box = card.box === 1 ? 2 : 3
+  return { ...card, box, dueRound: rounds + BOX_INTERVAL[box] }
+}
+
+/**
  * The project after a finished round: one more round played, the deck moved, the level and streak
  * updated and the missed topics noted. Due rounds count from the rounds played before this one, so
  * a card "due next round" is due as soon as this returns. A clean right moves a card up a box
@@ -329,13 +340,13 @@ export const afterRound = (project: TutorProject, round: TutorRound, now: number
     // Only a replayed card moves up: round ids restart with each session, so a fresh question can
     // share an id with an old card it never asked, and a clean right on it must not promote that card.
     if (card === undefined || question.isReview !== true) continue
-    if (card.box === 3) {
+    const promoted = promoteCard(card, project.rounds)
+    if (promoted === null) {
       retired.push(card.question.topic)
       deck = others
       continue
     }
-    const box = card.box === 1 ? 2 : 3
-    deck = [...others, { ...card, box, dueRound: project.rounds + BOX_INTERVAL[box] }]
+    deck = [...others, promoted]
   }
   const { level, streak } = nextLevel(project, round)
   return {
