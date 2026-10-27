@@ -1439,6 +1439,38 @@ describe('tutor follow-ups and model text', () => {
     expect(await term.find({ type: 'Button', key: 'open-file' })).toBeUndefined()
     await term.unmount()
   })
+  test('open file stays away for a path the session touched only in a linked worktree', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    mock.clock(on)
+    on('tool.call', { tool: 'Edit' }, () => ({ result: {} as never, text: 'edited' }))
+    const questions = [{ ...choiceQ(0), file: 'hooks/tutor.ts' }, choiceQ(1), explainQ]
+    const { record } = engine(on, {
+      saved: { tutorConsent: 2 },
+      git: {
+        log: COMMITS,
+        'rev-parse': '\n',
+        branch: 'main\n',
+        worktree: 'worktree /repo\0HEAD 1\0branch refs/heads/main\0\0worktree /side\0HEAD 2\0branch refs/heads/side\0\0',
+        // The same relative path is changed in this checkout too, so the digest lets the model name it.
+        'name-status': 'M\0hooks/tutor.ts\0',
+        diff: ['diff --git a/hooks/tutor.ts b/hooks/tutor.ts', '--- a/hooks/tutor.ts', '+++ b/hooks/tutor.ts', '@@ -1 +1 @@', '-export const one = 1', '+export const one = 2', ''].join('\n'),
+        numstat: '1\t1\thooks/tutor.ts\n',
+      },
+      completes: [reply(JSON.stringify({ v: 1, questions }), DIGEST_CALL)],
+    })
+    await start($)
+    await $.tool.call({ tool: 'Edit', file_path: '/side/hooks/tutor.ts', old_string: 'a', new_string: 'b' })
+    await warmUp($)
+    const ui = await tutorTab($, 'terminal')
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    await ui.press({ key: (await ui.find({ type: 'Button', text: 'right answer' }))?.key ?? '' })
+    await shows(ui, '✓ right')
+    // The file is the question's own, so it is named; the session never touched this checkout's copy.
+    await shows(ui, 'hooks/tutor.ts')
+    expect(await ui.find({ type: 'Button', key: 'open-file' })).toBeUndefined()
+    expect(record.toasts.some(text => text.includes('hooks/tutor.ts'))).toBe(false)
+    await ui.unmount()
+  })
 })
 
 describe('tutor explain on mobile', () => {
