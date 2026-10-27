@@ -1,5 +1,6 @@
-import type { ChoiceQuestion, ExplainQuestion, TutorAnswer, TutorCard, TutorLevel, TutorProgressStore, TutorProject, TutorQuestion, TutorRound } from '../types'
+import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorAnswer, TutorCard, TutorCode, TutorLevel, TutorProgressStore, TutorProject, TutorQuestion, TutorRound } from '../types'
 import { safeText } from './fileTree'
+import { CODE_LINE_MAX, codeNumbers, findQuote, isCodeDiff, parseHunks } from './tutorCode'
 import { isTutorTag, MAX_OPTIONS, MIN_OPTIONS, MIN_PROMPT, QUIZ_CAPS, SYMBOL_SHAPE } from './tutorParse'
 import { scoreRound } from './tutorRound'
 
@@ -15,6 +16,17 @@ export const MAX_MISSES = 8
  * Serialized size the tutor store is held under. The store's 4 MiB is shared with every other
  * key, and a deck of maximal choice cards outgrows this on the count caps alone, so `withProject`
  * also drops whole least-recent projects until the store fits.
+ *
+ * The bound is per project, measured in UTF-8 bytes of JSON. A card's text fields other than its
+ * code come to at most 2,192 characters (id 120, topic 32, prompt 280, four options of 120, four
+ * whys of 220, hint 140, file 200, symbol 60), or 2,912 for a line card's four options of 300; a
+ * code card adds its 200-character file and a diff of at most 1,600, so about 4.7k in all. A
+ * character costs at most 3 bytes (BMP text; `"`, `\`, tab and newline escape to 2), so a card
+ * is at most about 14 KB and a full 20-card project about 285 KB: one project fits on its own.
+ * Twelve full projects never did (about 580 KB of plain-ASCII choice cards before code cards), and
+ * no per-card code cap could change that, so whole projects go least recent first: with maximal
+ * ASCII code cards about five full projects fit, about nine without. A lone surrogate escapes to 6
+ * bytes, but the project just written is never dropped, so even that worst case is still saved.
  */
 export const MAX_STORE_BYTES = 450_000
 
@@ -67,6 +79,38 @@ const optionalField = (raw: Fields, key: 'hint' | 'file' | 'symbol'): { readonly
   return isBounded(value, 1, STORED_CAPS[key]) ? { value } : undefined
 }
 
+/**
+ * A stored code card, or null when any part of it is not one this plugin could have made: its
+ * file within the cap, its diff one well-formed capped hunk, its focus line one the diff shows.
+ */
+const parseCode = (raw: unknown): TutorCode | null => {
+  if (!isFields(raw)) return null
+  const { file, diff, focusLine } = raw
+  if (!isBounded(file, 1, STORED_CAPS.file) || typeof diff !== 'string' || !isCodeDiff(diff)) return null
+  if (focusLine === undefined) return { file, diff }
+  return isCount(focusLine) && codeNumbers(diff).includes(focusLine) ? { file, diff, focusLine } : null
+}
+
+/**
+ * A stored line question's own fields, or null: its options must each be a distinct line of its
+ * code card, shown at the number `lineNumbers` gives it, or the card would draw buttons for lines
+ * it does not hold. Its card is the question, so a bad `code` drops it.
+ */
+const parseLineFields = (raw: Fields, code: TutorCode | null): Pick<LineQuestion, 'options' | 'answer' | 'why' | 'lineNumbers' | 'code'> | null => {
+  if (code === null) return null
+  const options = boundedStrings(raw.options, MIN_OPTIONS, MAX_OPTIONS, CODE_LINE_MAX)
+  if (options === null) return null
+  const why = boundedStrings(raw.why, options.length, options.length, STORED_CAPS.why)
+  const { answer, lineNumbers } = raw
+  if (why === null || !isCount(answer) || answer >= options.length) return null
+  if (!Array.isArray(lineNumbers) || lineNumbers.length !== options.length || !lineNumbers.every(isCount)) return null
+  const hunks = parseHunks(code.diff)
+  const lines = options.map(option => findQuote(hunks, option))
+  const isEachShown = lines.every((line, index) => line !== null && line.number === lineNumbers[index])
+  if (!isEachShown || new Set(lines.map(line => line?.line)).size !== lines.length) return null
+  return { options, answer, why, lineNumbers, code }
+}
+
 const parseQuestion = (raw: unknown): TutorQuestion | null => {
   if (!isFields(raw)) return null
   const { id, tag, topic, prompt } = raw
@@ -86,20 +130,29 @@ const parseQuestion = (raw: unknown): TutorQuestion | null => {
     ...(file.value === undefined ? {} : { file: file.value }),
     ...(symbol.value === undefined ? {} : { symbol: symbol.value }),
   }
+  const code = raw.code === undefined ? null : parseCode(raw.code)
+  if (raw.kind === 'line') {
+    const fields = parseLineFields(raw, code)
+    if (fields === null) return null
+    const question: LineQuestion = { ...base, kind: 'line', ...fields }
+    return question
+  }
+  // A bad code card on a choice or explain costs only the card; the question stands without it.
+  const card = code === null ? {} : { code }
   if (raw.kind === 'choice') {
     const options = boundedStrings(raw.options, MIN_OPTIONS, MAX_OPTIONS, STORED_CAPS.option)
     if (options === null) return null
     const why = boundedStrings(raw.why, options.length, options.length, STORED_CAPS.why)
     const { answer } = raw
     if (why === null || !isCount(answer) || answer >= options.length) return null
-    const question: ChoiceQuestion = { ...base, kind: 'choice', options, answer, why }
+    const question: ChoiceQuestion = { ...base, ...card, kind: 'choice', options, answer, why }
     return question
   }
   if (raw.kind === 'explain') {
     const { reference } = raw
     const keyPoints = boundedStrings(raw.keyPoints, 1, STORED_CAPS.keyPoints, STORED_CAPS.keyPoint)
     if (!isBounded(reference, 1, STORED_CAPS.reference) || keyPoints === null) return null
-    const question: ExplainQuestion = { ...base, kind: 'explain', reference, keyPoints }
+    const question: ExplainQuestion = { ...base, ...card, kind: 'explain', reference, keyPoints }
     return question
   }
   return null

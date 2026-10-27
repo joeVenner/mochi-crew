@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ChoiceQuestion, ExplainQuestion, TutorAnswer, TutorCard, TutorOutcome, TutorProgressStore, TutorProject, TutorQuestion, TutorRound } from '../types'
+import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorAnswer, TutorCard, TutorOutcome, TutorProgressStore, TutorProject, TutorQuestion, TutorRound } from '../types'
+import { CODE_MAX_CHARS, CODE_WINDOW, isCodeDiff } from '../hooks/tutorCode'
 import { FRESH_PROJECT, MAX_DECK, MAX_MASTERED, MAX_MISSES, MAX_PROJECTS, MAX_STORE_BYTES, afterRound, dueCards, nextLevel, parseProgress, projectOf, withProject } from '../hooks/tutorProgress'
 
 const choice = (id: string, topic = `topic ${id}`): ChoiceQuestion => ({
@@ -271,5 +272,118 @@ describe('tutor progress', () => {
     // The latest project is never the one dropped to fit, and what is kept parses back unchanged.
     expect(projectOf(store, `/Users/someone/projects/${'d'.repeat(60)}/${MAX_PROJECTS - 1}`).deck).toHaveLength(MAX_DECK)
     expect(parseProgress(JSON.parse(JSON.stringify(store)))).toEqual(store)
+  })
+
+  describe('code cards', () => {
+    const DIFF = '@@ -10,3 +10,4 @@\n const run = makeRunner()\n-const args = []\n+const args = [\'--no-optional-locks\']\n+\tconst timeout = GIT_MS\n return run(args, timeout)'
+    const withCode = (id: string): ChoiceQuestion => ({ ...choice(id), code: { file: 'hooks/register.tsx', diff: DIFF, focusLine: 11 } })
+    const line = (id: string, over: Partial<LineQuestion> = {}): LineQuestion => ({
+      id,
+      kind: 'line',
+      tag: 'how',
+      topic: `line ${id}`,
+      prompt: 'Which line keeps git from taking the lock?',
+      options: ['const run = makeRunner()', "const args = ['--no-optional-locks']", 'const timeout = GIT_MS'],
+      answer: 1,
+      why: ['Wrong: it builds the runner.', 'Right: the flag.', 'Wrong: a timeout.'],
+      lineNumbers: [10, 11, 12],
+      code: { file: 'hooks/register.tsx', diff: DIFF, focusLine: 10 },
+      file: 'hooks/register.tsx',
+      ...over,
+    })
+    const storeOf = (deck: readonly unknown[]): unknown => ({
+      v: 1,
+      projects: { '/repo': { level: 1, rounds: 2, streak: 0, updatedAt: 5, mastered: [], recentMisses: [], deck } },
+    })
+    const deckOf = (raw: unknown): readonly TutorCard[] => projectOf(parseProgress(raw), '/repo').deck
+    const reloaded = (store: TutorProgressStore): TutorProgressStore => parseProgress(JSON.parse(JSON.stringify(store)))
+
+    test('code and line cards survive a save and a reload', async () => {
+      const questions = [withCode('c:0'), line('c:1'), { ...explain('c:2'), code: { file: 'hooks/register.tsx', diff: DIFF } }]
+      const after = afterRound(FRESH_PROJECT, round(questions, questions.map(question => answer(question.id, 'wrong'))), 9)
+      const store = withProject({ v: 1, projects: {} }, '/repo', after)
+      expect(reloaded(store)).toEqual(store)
+      expect(projectOf(reloaded(store), '/repo').deck.map(held => held.question)).toEqual(questions)
+      // A replayed line question is stored without its replay marker, card and numbers intact.
+      const replayed = afterRound(after, round([{ ...line('c:1'), isReview: true }], [answer('c:1', 'wrong')]), 10)
+      expect(replayed.deck.find(held => held.question.id === 'c:1')?.question).toEqual(line('c:1'))
+    })
+
+    test('a bad code card costs a choice or explain only its card', async () => {
+      const bad: readonly unknown[] = [
+        'not a card',
+        { file: 'hooks/register.tsx' },
+        { file: '', diff: DIFF },
+        { file: 'f'.repeat(201), diff: DIFF },
+        { file: 'bell\u0007', diff: DIFF },
+        { file: 'hooks/register.tsx', diff: 'no hunk here' },
+        { file: 'hooks/register.tsx', diff: DIFF.replace('-10,3', '-10,9') },
+        { file: 'hooks/register.tsx', diff: `${DIFF}\n\u001b[2J` },
+        { file: 'hooks/register.tsx', diff: DIFF, focusLine: 99 },
+        { file: 'hooks/register.tsx', diff: DIFF, focusLine: 'ten' },
+      ]
+      for (const code of bad) {
+        const deck = deckOf(storeOf([card({ ...choice('b:0'), code } as unknown as TutorQuestion, 1, 1), card({ ...explain('b:1'), code } as unknown as TutorQuestion, 1, 1)]))
+        expect(deck.map(held => held.question)).toEqual([choice('b:0'), explain('b:1')])
+      }
+    })
+
+    test('a line card that does not match its own code is dropped whole', async () => {
+      const bad: readonly LineQuestion[] = [
+        line('d:0', { lineNumbers: [10, 11] }),
+        line('d:0', { lineNumbers: [10, 11, 13] }),
+        line('d:0', { options: ['const run = makeRunner()', 'rm -rf /', 'const timeout = GIT_MS'] }),
+        line('d:0', { options: ['const run = makeRunner()', 'const  run = makeRunner()'], why: ['a', 'b'], answer: 0, lineNumbers: [10, 10] }),
+        line('d:0', { answer: 3 }),
+        line('d:0', { why: ['only one'] }),
+        line('d:0', { code: { file: 'hooks/register.tsx', diff: 'junk' } }),
+        line('d:0', { options: ['const run = makeRunner()'], why: ['a'], answer: 0, lineNumbers: [10] }),
+      ]
+      for (const question of bad) expect(deckOf(storeOf([card(question, 1, 1), card(choice('d:1'), 1, 1)])).map(held => held.question.id)).toEqual(['d:1'])
+      const { code: _code, ...codeless } = line('d:0')
+      expect(deckOf(storeOf([card(codeless as unknown as TutorQuestion, 1, 1)]))).toEqual([])
+    })
+
+    test('a store from before code cards loads unchanged', async () => {
+      const old = storeOf([card(choice('e:0'), 2, 4), card(explain('e:1'), 1, 3)])
+      // Oldest due first, as every deck is kept.
+      expect(deckOf(old).map(held => held.question)).toEqual([explain('e:1'), choice('e:0')])
+    })
+
+    test('maximal code cards keep one project whole and the store under 450 KB', async () => {
+      const header = `@@ -1,${CODE_WINDOW} +1,${CODE_WINDOW} @@`
+      // Each line costs its marker and its newline on top of its text.
+      const width = Math.floor((CODE_MAX_CHARS - header.length) / CODE_WINDOW) - 2
+      const diff = [header, ...Array.from({ length: CODE_WINDOW }, (_, i) => ` ${`${i}`.padEnd(width, 'x')}`)].join('\n')
+      expect(isCodeDiff(diff)).toBe(true)
+      expect(diff.length).toBeGreaterThan(CODE_MAX_CHARS - 120)
+      const widest = (id: string): ChoiceQuestion => ({
+        id,
+        kind: 'choice',
+        tag: 'what-if',
+        topic: 't'.repeat(32),
+        prompt: 'p'.repeat(280),
+        options: ['a', 'b', 'c', 'd'].map(letter => letter.repeat(120)),
+        answer: 3,
+        why: ['a', 'b', 'c', 'd'].map(letter => letter.repeat(220)),
+        hint: 'h'.repeat(140),
+        file: 'f'.repeat(200),
+        symbol: 's'.repeat(60),
+        code: { file: 'f'.repeat(200), diff, focusLine: 1 },
+      })
+      const full = (index: number): TutorProject => project({
+        rounds: 1_000_000,
+        updatedAt: 1_700_000_000_000 + index,
+        deck: Array.from({ length: MAX_DECK }, (_, slot) => card(widest(`round-${index}-${'x'.repeat(24)}:${slot}`), 3, 1_000_000 + slot)),
+      })
+      const bytesOf = (value: TutorProgressStore): number => new TextEncoder().encode(JSON.stringify(value)).length
+      expect(bytesOf({ v: 1, projects: { '/one': full(0) } })).toBeLessThan(MAX_STORE_BYTES / 4)
+      let store: TutorProgressStore = { v: 1, projects: {} }
+      for (let index = 0; index < MAX_PROJECTS; index++) store = withProject(store, `/p/${index}`, full(index))
+      expect(bytesOf(store)).toBeLessThan(MAX_STORE_BYTES)
+      // About 4 KB a card: five full projects fit, the newest five, and they reload unchanged.
+      expect(Object.keys(store.projects)).toEqual(['/p/11', '/p/10', '/p/9', '/p/8', '/p/7'])
+      expect(reloaded(store)).toEqual(store)
+    })
   })
 })
