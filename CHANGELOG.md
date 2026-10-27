@@ -7,6 +7,36 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Mochi Tutor flashcards: press `c` on Home or the summary (or run `/mochi tutor cards`) to go
+  through this project's review deck as flip cards, due cards first and at most 10. `f` flips a
+  card, and `1` again, `2` hard or `3` good reschedules it in the deck's boxes. Good moves only a
+  due card up, so flipping ahead can't cram a card to mastery. Each rating is saved at once, a due
+  card rated good earns 1 XP (at most 10 per conversation), and a tally ends the session. No
+  request is made and nothing is sent.
+- `k` on an answer keeps any question as a flashcard, not only the ones you missed.
+- Code cards: a question can point at a line of the diff, and the tutor draws that part of the
+  change under it with its file and line. The code is cut from the masked diff Mochi made itself,
+  never written by the model. Up to 16 lines show, 8 in a short pane, and only a caption when the
+  pane is too short. Saved cards keep their code for reviews and flashcards.
+- Which-line questions: pick the line of a code card that does something. They are checked on
+  your machine with no request.
+
+### Changed
+
+- Tutor replies use schema version 2, which adds code anchors and which-line questions; version 1
+  replies still read as before.
+- Tutor questions, answers and flashcards are drawn as cards in a rounded frame, coloured for a
+  question, a right answer or a wrong one.
+- Privacy: a digest round's code cards come only from the excerpts it already sent. On a fork round
+  that points at files, Mochi runs one more local `git diff` of just those files (at most 5), with
+  the same rename check, masking and caps as the digest, and only draws it. Nothing of it is sent,
+  except that a follow-up on a which-line question sends its options, the lines the model quoted.
+  Saved cards can now hold up to 16 lines of masked diff each, so fewer projects may fit in the
+  store, the oldest going first. Going back to 1.8.0 keeps the store, but its next save drops code
+  cards' code and which-line questions.
+
 ## [1.8.0] - 2026-10-27
 
 ### Added
