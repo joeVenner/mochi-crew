@@ -741,7 +741,7 @@ describe('tutor view', () => {
     expect(tutorHudLabel({ phase: 'home', focus: 'recent', isDigestOnly: false })).toBe(null)
     expect(tutorHudLabel({ phase: 'loading', epoch: 1, focus: 'recent', source: 'fork', since: 0 })).toBe(null)
     expect(tutorHudLabel({ phase: 'summary', round: live, xp: 5, levelBefore: 1, levelAfter: 1, wasForkMiss: false })).toBe(null)
-    expect(tutorHudLabel({ phase: 'cards', flash: flashOf({ index: 1 }) })).toBe('flashcards · card 2/3')
+    expect(tutorHudLabel({ phase: 'cards', flash: flashOf({ index: 1 }) })).toBe('flashcards · 2/3')
     expect(tutorHudLabel({ phase: 'cards-done', flash: flashOf(), xp: 0 })).toBe(null)
   })
 })

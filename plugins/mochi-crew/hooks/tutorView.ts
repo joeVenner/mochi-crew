@@ -246,7 +246,7 @@ export const isListedControl = (control: TutorControl): boolean =>
 
 /** The main HUD's line while a round or flashcards are on screen: `quizzing you · q 2/5`; null otherwise. */
 export const tutorHudLabel = (state: TutorState): string | null => {
-  if (state.phase === 'cards') return `flashcards · card ${Math.min(state.flash.index + 1, state.flash.ids.length)}/${state.flash.ids.length}`
+  if (state.phase === 'cards') return `flashcards · ${Math.min(state.flash.index + 1, state.flash.ids.length)}/${state.flash.ids.length}`
   // `asking` sits inside feedback; leaving it out would blank the label mid-question.
   if (state.phase !== 'question' && state.phase !== 'feedback' && state.phase !== 'grading' && state.phase !== 'asking') return null
   const { round } = state
