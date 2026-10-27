@@ -31,6 +31,9 @@ const CASES: ReadonlyArray<readonly [string, string, string]> = [
   ['unquoted spaced assignment', 'aws_secret_access_key = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY', `aws_secret_access_key = ${MASK}`],
   ['quoted name and value', `{"api_key" : 'abc123'}`, `{"api_key" : '${MASK}'}`],
   ['object literal key', "connect({ password: 'pa55word' })", `connect({ password: '${MASK}' })`],
+  ['password mid-sentence', 'I set password: hunter2 in the config', `I set password: ${MASK} in the config`],
+  ['backticked password', 'use `db_password: hunter2` there', `use \`db_password: ${MASK}\` there`],
+  ['token at the end of a joined reply', 'Done. The new token: abc123', `Done. The new token: ${MASK}`],
 ]
 
 describe('redact', () => {
@@ -50,7 +53,8 @@ describe('redact', () => {
     for (const code of [
       'apiKey: string;', '  token: Token;', 'readonly password: string', 'if (token === undefined) return', 'const ok = token == other',
       'const onToken = (token) => token', 'const apiKey = process.env.API_KEY', 'password = getPassword()', 'author: "Ada"', 'primaryKey: true',
-      'keys = [1, 2]', 'const token = null', 'connect({ password, user })',
+      'keys = [1, 2]', 'const token = null', 'connect({ password, user })', 'function f(token: Token) {}', 'the api key: sortKey in tables',
+      'set the authMode: strict here',
     ]) {
       expect(redactSecrets(code)).toBe(code)
     }

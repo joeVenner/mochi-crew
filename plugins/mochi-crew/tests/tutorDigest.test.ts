@@ -109,6 +109,13 @@ describe('tutorDigest', () => {
     expect(maskDiffForModel('', 100)).toBe('')
   })
 
+  test('buildDigest masks a password typed into a prompt and quoted in a reply', async () => {
+    const rows = [row('user', 'I set\npassword: hunter2-typed\nin the yaml'), row('assistant', 'Use `db_password: hunter2-quoted` there.')]
+    const digest = buildDigest({ ...SOURCES, rows })
+    expect(digest.text.includes('hunter2')).toBe(false)
+    expect(digest.text).toContain(`password: ${MASK}`)
+  })
+
   test('buildDigest masks a secret-shaped file name in diff and new-file titles', async () => {
     const name = `src/${DUMMY_KEY}.ts`
     const diff = fileDiff(name, [hunk(1, 1)])

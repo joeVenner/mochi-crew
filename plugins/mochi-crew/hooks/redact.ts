@@ -11,6 +11,9 @@ const VALUE = `(?:"[^"]*"|'[^']*'|[^\\s;&|]+)`
 
 // A name holding one of these is taken to name a secret; `author` is not an auth value.
 const SECRET_WORD = /key|secret|token|passw(?:or)?d|pwd|credential|auth(?!or)/i
+// Names that are a secret wherever they stand; `key` and `auth` are too common in code
+// (`primaryKey`, `authMode`) to be trusted away from a key line.
+const STRONG_SECRET_WORD = /secret|token|passw(?:or)?d|pwd|credential/i
 // Unquoted values that are a type, a keyword or an empty value, never a secret.
 const PLAIN_VALUE = /^(?:string|number|boolean|bigint|symbol|object|unknown|any|never|void|undefined|null|true|false|none|nil|~)$/i
 // A value read from somewhere else names no secret itself, and masking it hides the lesson.
@@ -21,8 +24,10 @@ const LINE_START = /^[ \t]*[+\- ]?[ \t]*(?:-[ \t]+)?$/
 /**
  * `name: value` and `name = value` in config and code, when the name says it is secret: YAML
  * `password: hunter2`, `const apiKey = "…"`, `"api_key" : '…'`. Only the value is masked. A `:`
- * with an unquoted value masks only a key at the start of a line whose value ends there, so a
- * type annotation (`token: Token;`) or an object key pointing at a variable is left alone.
+ * with an unquoted value masks only a value that ends there (at a space, the line's end, a `#`
+ * or a backtick), so a type annotation (`token: Token;`) is left alone; for a `key` or `auth`
+ * name, only on a key line too. Chat text is joined onto one line before masking, so a strong
+ * name is masked mid-sentence (`I set password: hunter2`).
  */
 const assignedSecret = (match: string, ...groups: unknown[]): string => {
   // replace passes the groups (an unmatched one undefined), then the offset and the whole text.
@@ -36,8 +41,8 @@ const assignedSecret = (match: string, ...groups: unknown[]): string => {
   const lineStart = whole.lastIndexOf('\n', offset) + 1
   const isKeyLine = LINE_START.test(whole.slice(lineStart, offset + lead.length))
   const next = whole[offset + match.length]
-  const isValueEnd = next === undefined || next === '#' || /\s/.test(next)
-  return isKeyLine && isValueEnd ? `${head}${MASK}` : match
+  const isValueEnd = next === undefined || next === '#' || next === '`' || /\s/.test(next)
+  return isValueEnd && (isKeyLine || STRONG_SECRET_WORD.test(name)) ? `${head}${MASK}` : match
 }
 
 /** Ordered: the specific shapes first, so a generic rule never half-masks a known token. */
