@@ -1195,6 +1195,32 @@ describe('tutor grading and follow-ups', () => {
     await ui.unmount()
   })
 
+  test('a start during a grade or mid-round says why it waits', async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [{ ...grade([true, true]), after: 10_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    // A question on screen: its answers would be lost, so the round is finished first.
+    expect((await $.command.run(mochi('tutor start'))).text).toBe('Tutor opened.')
+    expect(record.toasts).toContain('Finish or end this round first.')
+    await toExplain(ui)
+    const typed = ui.input({ key: await fieldKey(ui), text: 'every section has its own cap' })
+    await clock.settle()
+    await shows(ui, 'checking your answer…')
+    expect((await $.command.run(mochi('tutor start'))).text).toBe('Tutor opened.')
+    expect(record.toasts).toContain('Mochi is checking your answer.')
+    expect(record.toasts).not.toContain('Mochi is already writing one.')
+    await clock.advance(10_000)
+    await typed
+    await shows(ui, GRADE_NOTE)
+    // No second round was asked for, and the grade landed on the round it belonged to.
+    expect(record.forkPrompts).toHaveLength(1)
+    expect(record.completeRequests).toHaveLength(1)
+    await ui.unmount()
+  })
+
   test('typed text survives a redraw', async ($, on) => {
     const clock = mock.clock(on)
     const { record } = engine(on, { saved: { tutorConsent: 2 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })

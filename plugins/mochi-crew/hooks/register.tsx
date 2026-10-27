@@ -41,7 +41,7 @@ import { DEFAULT_TUTOR_CONFIG, afterDigest, afterFork, choosePlan, isForkMiss, p
 import { askRequest, digestRequest, forkPrompt, gradeRequest } from './tutorPrompt'
 import { FRESH_PROJECT, afterRound, dueCards, parseProgress, projectOf, withProject } from './tutorProgress'
 import type { TutorEvent } from './tutorRound'
-import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview, verdictOf } from './tutorRound'
+import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview, tutorStartRefusal, verdictOf } from './tutorRound'
 import type { TutorAction, TutorControl, TutorInputRow, TutorRow, TutorTone, TutorViewContext } from './tutorView'
 import { tutorHudLabel, tutorScreen } from './tutorView'
 import type { ProviderEnv, TtlEnv } from './meter'
@@ -1068,7 +1068,6 @@ const TUTOR_TONES: Readonly<Record<TutorTone, { color?: string; dimColor?: boole
 // Opened from the main pane, the tab usually does not get the keys (the person holds them there).
 const TUTOR_UNFOCUSED = 'Tutor tab is open: press ctrl+x tab, or click it.'
 const TUTOR_UNPLACED = 'Tutor tab opened; widen the terminal to see it.'
-const TUTOR_BUSY = 'Mochi is already writing one.'
 const TUTOR_TOO_SHORT = 'type an answer, or press r to see it'
 const TUTOR_ASK_FAILED = "Mochi couldn't answer that one."
 // Shown while the digest stands in for a fork that could not answer.
@@ -1282,9 +1281,6 @@ const abortTutorCalls = (): void => {
   tutorSpinner?.cancel()
   tutorSpinner = undefined
 }
-
-/** Whether a screen waits on a call; one call runs at a time, so a start then is turned away. */
-const isTutorBusy = (state: TutorState): boolean => state.phase === 'loading' || state.phase === 'grading' || state.phase === 'asking'
 
 /** The epoch a screen waits under (a round being written, a grade, a follow-up); undefined when it waits on nothing. */
 const waitingEpoch = (state: TutorState): number | undefined =>
@@ -1652,8 +1648,8 @@ const writeRound = async ($: EngineInterface, order: RoundOrder): Promise<void> 
 }
 
 /**
- * Starts a round on `focus`, asking for consent first. One call runs at a time: a start while
- * one does is turned away with a toast. The round is written unawaited, so a press and `/mochi
+ * Starts a round on `focus`, asking for consent first. One call runs at a time and a round on
+ * screen is finished first: a start then is turned away with a toast saying which. The round is written unawaited, so a press and `/mochi
  * tutor start` answer at once; true when its loading screen is up.
  */
 const startRound = async ($: EngineInterface, focus: TutorFocus, isDigestOnly: boolean): Promise<boolean> => {
@@ -1666,16 +1662,15 @@ const startRound = async ($: EngineInterface, focus: TutorFocus, isDigestOnly: b
   const at = await $.clock.now()
   const plan = choosePlan(await readPlanInput($, isDigestOnly, at))
   const project = (await read($, tutorProject)) ?? FRESH_PROJECT
-  let isBusy = false
+  let refusal: string | undefined
   const { state: shown, epoch } = await claimTutor($, (current, next) => {
-    isBusy = isTutorBusy(current)
-    return isBusy ? undefined : { kind: 'loading', epoch: next, focus, source: plan.source, at }
+    refusal = tutorStartRefusal(current)
+    return refusal === undefined ? { kind: 'loading', epoch: next, focus, source: plan.source, at } : undefined
   })
-  if (isBusy) {
-    $.ui.toast(TUTOR_BUSY)
+  if (refusal !== undefined) {
+    $.ui.toast(refusal)
     return false
   }
-  // A round on screen takes no start: it is finished or ended first.
   if (epoch === undefined) return false
   // Nothing on screen waited, so a call still running is a stopped one's.
   abortTutorCalls()
@@ -1713,13 +1708,13 @@ const startReview = async ($: EngineInterface): Promise<boolean> => {
   const cards = dueCards((await read($, tutorProject)) ?? FRESH_PROJECT, REVIEW_ROUND_MAX)
   if (cards.length === 0) return false
   const now = await $.clock.now()
-  let isBusy = false
+  let refusal: string | undefined
   const { state: shown, epoch } = await claimTutor($, (current, next) => {
-    isBusy = isTutorBusy(current)
-    return isBusy ? undefined : { kind: 'loaded', round: reviewRound(cards, next, now, current.phase === 'home' ? current.focus : 'recent') }
+    refusal = tutorStartRefusal(current)
+    return refusal === undefined ? { kind: 'loaded', round: reviewRound(cards, next, now, current.phase === 'home' ? current.focus : 'recent') } : undefined
   })
-  if (isBusy) {
-    $.ui.toast(TUTOR_BUSY)
+  if (refusal !== undefined) {
+    $.ui.toast(refusal)
     return false
   }
   // Only Home and the summary take a review round.

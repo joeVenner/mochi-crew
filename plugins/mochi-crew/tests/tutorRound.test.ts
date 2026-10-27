@@ -19,6 +19,8 @@ import {
   roundXp,
   scoreRound,
   spliceReview,
+  TUTOR_REFUSALS,
+  tutorStartRefusal,
   verdictOf,
   xpForAnswer,
 } from '../hooks/tutorRound'
@@ -368,6 +370,16 @@ describe('tutor round', () => {
     const failed = apply(asked, { kind: 'asking', epoch: 6, at: 0 }, { kind: 'ask-failed', usage: call })
     expect(roundOf(failed).usage).toEqual({ calls: 2, input: 1_800, cacheRead: 0, cacheWrite: 0, output: 120 })
     expect(roundOf(failed).followUpsUsed).toBe(1)
+  })
+
+  test('tutorStartRefusal says why each screen turns a start away', async () => {
+    expect(tutorStartRefusal(STATES.loading)).toBe(TUTOR_REFUSALS.writing)
+    expect(tutorStartRefusal(STATES.grading)).toBe('Mochi is checking your answer.')
+    expect(tutorStartRefusal(STATES.asking)).toBe(TUTOR_REFUSALS.checking)
+    expect(tutorStartRefusal(STATES.question)).toBe('Finish or end this round first.')
+    expect(tutorStartRefusal(STATES.feedback)).toBe(TUTOR_REFUSALS.mid)
+    // Screens between rounds take a start, and the reducer decides the rest.
+    for (const phase of ['closed', 'consent', 'home', 'summary', 'error'] as const) expect(tutorStartRefusal(STATES[phase])).toBeUndefined()
   })
 
   test('describeFailure words every failure', async () => {

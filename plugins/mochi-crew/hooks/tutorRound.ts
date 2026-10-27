@@ -137,6 +137,32 @@ export const roundXp = (round: TutorRound): number => {
 
 const tokens = (count: number): number => (Number.isFinite(count) && count > 0 ? count : 0)
 
+/** Toasts for a start or review that the screen on show turns away. */
+export const TUTOR_REFUSALS: Readonly<{ writing: string; checking: string; mid: string }> = {
+  writing: 'Mochi is already writing one.',
+  checking: 'Mochi is checking your answer.',
+  mid: 'Finish or end this round first.',
+}
+
+/**
+ * Why a new round cannot start over `state`, as a toast, or undefined when it can. One call runs
+ * at a time, and a round on screen is finished or ended first, so its answers are not lost.
+ */
+export const tutorStartRefusal = (state: TutorState): string | undefined => {
+  switch (state.phase) {
+    case 'loading':
+      return TUTOR_REFUSALS.writing
+    case 'grading':
+    case 'asking':
+      return TUTOR_REFUSALS.checking
+    case 'question':
+    case 'feedback':
+      return TUTOR_REFUSALS.mid
+    default:
+      return undefined
+  }
+}
+
 /** Adds one call's usage to a running total; failed and stale calls count too (C.7). */
 export const addTutorUsage = (total: TutorUsage, usage: ModelUsage): TutorUsage => ({
   calls: total.calls + 1,
