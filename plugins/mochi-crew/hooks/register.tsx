@@ -35,13 +35,13 @@ import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
 import type { Digest, TranscriptRow } from './tutorDigest'
 import { buildDigest, diffArgs, isSecretPath, logArgs, lsFilesArgs, numstatArgs, toTranscriptRows } from './tutorDigest'
 import type { ParseOutcome } from './tutorParse'
-import { parseRound } from './tutorParse'
+import { cleanModelText, parseGrade, parseRound } from './tutorParse'
 import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
 import { DEFAULT_TUTOR_CONFIG, afterDigest, afterFork, choosePlan, isForkMiss, parseTutorConfig, planLabel, wasForkMiss } from './tutorPlan'
-import { digestRequest, forkPrompt } from './tutorPrompt'
+import { askRequest, digestRequest, forkPrompt, gradeRequest } from './tutorPrompt'
 import { FRESH_PROJECT, afterRound, dueCards, parseProgress, projectOf, withProject } from './tutorProgress'
 import type { TutorEvent } from './tutorRound'
-import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview } from './tutorRound'
+import { EMPTY_USAGE, ROUND_SIZE, addTutorUsage, applyTutor, closeOutRound, currentAnswer, currentQuestion, isAnswerTooShort, isLastQuestion, replayQuestion, roundXp, scoreRound, spliceReview, verdictOf } from './tutorRound'
 import type { TutorAction, TutorControl, TutorInputRow, TutorRow, TutorTone, TutorViewContext } from './tutorView'
 import { tutorHudLabel, tutorScreen } from './tutorView'
 import type { ProviderEnv, TtlEnv } from './meter'
@@ -1067,6 +1067,7 @@ const TUTOR_UNFOCUSED = 'Tutor tab is open: press ctrl+x tab, or click it.'
 const TUTOR_UNPLACED = 'Tutor tab opened; widen the terminal to see it.'
 const TUTOR_BUSY = 'Mochi is already writing one.'
 const TUTOR_TOO_SHORT = 'type an answer, or press r to see it'
+const TUTOR_ASK_FAILED = "Mochi couldn't answer that one."
 // Shown while the digest stands in for a fork that could not answer.
 const TUTOR_FALLBACK_NOTE = 'session unavailable, using the digest…'
 // A fork has no time limit of its own; past this the round stops waiting and asks the digest.
@@ -1332,11 +1333,14 @@ const runFork = async ($: EngineInterface, prompt: string): Promise<ForkWait> =>
   }
 }
 
-/** A digest call's outcome: its result, or that the engine refused to send it (a blocked model). */
-type DigestCall = { readonly kind: 'result'; readonly result: ModelCompleteResult } | { readonly kind: 'refused' }
+/** A tutor completion's outcome: its result, or that the engine refused to send it (a blocked model). */
+type CompleteCall = { readonly kind: 'result'; readonly result: ModelCompleteResult } | { readonly kind: 'refused' }
 
-/** Sends a digest round's request with its own abort, which `x` and session end pull (C.6). */
-const runDigest = async ($: EngineInterface, request: ModelCompleteRequest): Promise<DigestCall> => {
+/**
+ * Sends one tutor completion (a digest round, a grade, a follow-up) with its own abort, which
+ * `x` and session end pull (C.6). Its spend counts for the session at once, stale or not.
+ */
+const runComplete = async ($: EngineInterface, request: ModelCompleteRequest): Promise<CompleteCall> => {
   const controller = new AbortController()
   tutorAbort = controller
   try {
@@ -1410,14 +1414,18 @@ const gatherDigest = async ($: EngineInterface, root: string, focus: TutorFocus,
 /** What a start asked for: the round's first epoch, its focus and plan, the learner it is pitched at. */
 type RoundOrder = { readonly epoch: number; readonly focus: TutorFocus; readonly plan: TutorPlan; readonly project: TutorProject; readonly at: number }
 
+/** The epoch a screen waits under (a round being written, a grade, a follow-up); undefined when it waits on nothing. */
+const waitingEpoch = (state: TutorState): number | undefined =>
+  state.phase === 'loading' || state.phase === 'grading' || state.phase === 'asking' ? state.epoch : undefined
+
 /**
- * Applies a writing round's event only while its own loading screen is up, so a stopped round
- * never paints over what replaced it. True when it was applied.
+ * Applies a call's event only while the screen waiting on that call is up, so a stopped round,
+ * grade or follow-up never paints over what replaced it. True when it was applied.
  */
-const showWriting = async ($: EngineInterface, epoch: number, event: TutorEvent): Promise<boolean> => {
+const showReply = async ($: EngineInterface, epoch: number, event: TutorEvent): Promise<boolean> => {
   let isShown = false
   const shown = await update($, tutor, current => {
-    if (current.phase !== 'loading' || current.epoch !== epoch) return current
+    if (waitingEpoch(current) !== epoch) return current
     isShown = true
     return applyTutor(current, event)
   })
@@ -1449,7 +1457,7 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
   // Unique across sessions: a replayed card keeps its own id, which a new question must never share.
   const roundId = (): string => `round-${at}-${epoch}`
   const fail = async (failure: TutorFailure, canTryDigest: boolean): Promise<void> => {
-    await showWriting($, epoch, { kind: 'failed', failure, canTryDigest })
+    await showReply($, epoch, { kind: 'failed', failure, canTryDigest })
   }
   const show = async (source: 'fork' | 'digest', questions: readonly TutorQuestion[]): Promise<void> => {
     const round: TutorRound = {
@@ -1467,7 +1475,7 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
       followUpsUsed: 0,
       usage: spent,
     }
-    if (await showWriting($, epoch, { kind: 'loaded', round })) await say($, 'tutor-start', '')
+    if (await showReply($, epoch, { kind: 'loaded', round })) await say($, 'tutor-start', '')
   }
   tutorDigest = null
 
@@ -1494,7 +1502,7 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
     // Once, under a new epoch, so the fork's late reply is stale and the digest's round is current.
     tutorEpoch += 1
     const fellBack = tutorEpoch
-    if (!(await showWriting($, epoch, { kind: 'loading', epoch: fellBack, focus, source: 'digest', at: now, note: TUTOR_FALLBACK_NOTE }))) return dropStale($)
+    if (!(await showReply($, epoch, { kind: 'loading', epoch: fellBack, focus, source: 'digest', at: now, note: TUTOR_FALLBACK_NOTE }))) return dropStale($)
     epoch = fellBack
   }
 
@@ -1503,7 +1511,7 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
   // Nothing in git or the transcript, and nothing forked: no call is made (B.3).
   if (digest.isEmpty) return fail({ kind: 'nothing-to-quiz' }, false)
   tutorDigest = digest
-  const called = await runDigest($, digestRequest({ ...ctx, files: digest.files, commits: '' }, digest, tutorConfig))
+  const called = await runComplete($, digestRequest({ ...ctx, files: digest.files, commits: '' }, digest, tutorConfig))
   if (epoch !== tutorEpoch) return dropStale($)
   if (called.kind === 'refused') return fail({ kind: 'model-refused', model: tutorConfig.model }, false)
   spent = addTutorUsage(spent, called.result.usage)
@@ -1517,23 +1525,31 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
   return show('digest', parsed.questions)
 }
 
-/** Writes a round with the loading spinner turning; a round that throws goes back Home rather than spin on (logged). */
-const writeRound = async ($: EngineInterface, order: RoundOrder): Promise<void> => {
+/** Runs `work` with the tab's spinner turning, released when it settles (only this one: a newer call's stays). */
+const withSpinner = async ($: EngineInterface, work: () => Promise<void>): Promise<void> => {
   // The ticker repaints only the scene, so the spinner and its seconds need their own redraw.
   const spinner = $.clock.every(TUTOR_SPINNER_MS, () => $.ui.invalidate('ui.render'))
   tutorSpinner = spinner
   try {
-    await writeQuestions($, order)
-  } catch (error: unknown) {
-    $.ui.log(`mochi-crew: tutor could not write a round: ${String(error)}`, { to: 'debug' })
-    // Its own loading screen only (a fallback's epoch is above the first); a newer round cannot start while one shows.
-    await update($, tutor, current => (current.phase === 'loading' && current.epoch >= order.epoch ? applyTutor(current, { kind: 'cancel' }) : current))
-    $.ui.invalidate('ui.render')
+    await work()
   } finally {
     spinner.cancel()
     if (tutorSpinner === spinner) tutorSpinner = undefined
   }
 }
+
+/** Writes a round with the loading spinner turning; a round that throws goes back Home rather than spin on (logged). */
+const writeRound = async ($: EngineInterface, order: RoundOrder): Promise<void> =>
+  withSpinner($, async () => {
+    try {
+      await writeQuestions($, order)
+    } catch (error: unknown) {
+      $.ui.log(`mochi-crew: tutor could not write a round: ${String(error)}`, { to: 'debug' })
+      // Its own loading screen only (a fallback's epoch is above the first); a newer round cannot start while one shows.
+      await update($, tutor, current => (current.phase === 'loading' && current.epoch >= order.epoch ? applyTutor(current, { kind: 'cancel' }) : current))
+      $.ui.invalidate('ui.render')
+    }
+  })
 
 /**
  * Starts a round on `focus`, asking for consent first. One call runs at a time: a start while
@@ -1692,26 +1708,130 @@ const openTutorFile = async ($: EngineInterface): Promise<void> => {
   if (file === undefined) return
   // Checked again here, not only where the button is drawn: the path came from the model.
   if (!(await read($, treeTouched)).some(touched => touched.worktree === undefined && touched.path === file)) return
-  $.ui.toast(await openInEditor($, undefined, file, 'terminal'))
+  // The button is drawn on the terminal only; any other surface gets openInEditor's own refusal.
+  $.ui.toast(await openInEditor($, undefined, file, tutorViewport.surface))
 }
 
+/** A screen waiting on one grade or follow-up call. */
+type TutorWait = Extract<TutorState, { phase: 'grading' | 'asking' }>
+
 /**
- * A typed answer or follow-up. Never logged: it is the person's own text. Model grading and
- * follow-ups come with their own calls; until then a typed answer goes to self-grading, the text
- * kept on screen beside the reference.
+ * Puts up the screen that waits on a grade or a follow-up, under a new epoch decided inside the
+ * update as a start does, so a doubled Enter sends one call. Undefined when the event did not fit
+ * (no question on screen, no follow-ups left) or a stop got in between.
  */
-const submitTutorText = async ($: EngineInterface, purpose: TutorInputRow['purpose'], text: string): Promise<void> => {
-  if (purpose === 'ask') {
-    $.ui.log('mochi-crew: tutor follow-ups are not wired yet', { to: 'debug' })
-    return
+const beginWait = async ($: EngineInterface, event: (epoch: number) => TutorEvent): Promise<TutorWait | undefined> => {
+  const epoch = tutorEpoch + 1
+  const { before, after } = await changeTutor($, event(epoch))
+  if (after === before || (after.phase !== 'grading' && after.phase !== 'asking') || after.epoch !== epoch) return undefined
+  stopTutorWork()
+  if (tutorEpoch !== epoch) return undefined
+  await focusTutor($, after)
+  return after
+}
+
+/** A grade's or follow-up's reply text, or null when there is none; its spend when a request was made. */
+type TutorReply = { readonly text: string | null; readonly usage?: ModelUsage }
+
+/** One grade or follow-up completion; a failure is logged by kind only, never with model text. */
+const askTutorModel = async ($: EngineInterface, request: ModelCompleteRequest): Promise<TutorReply> => {
+  const called = await runComplete($, request)
+  if (called.kind === 'refused') return { text: null }
+  const { result } = called
+  if (!result.isAnswered) {
+    $.ui.log(`mochi-crew: tutor call failed: ${result.reason}`, { to: 'debug' })
+    return { text: null, usage: result.usage }
   }
+  return { text: result.text, usage: result.usage }
+}
+
+/** The spend to carry on a reply's event, when a request was made. */
+const spendOf = (reply: TutorReply): { readonly usage?: ModelUsage } => (reply.usage === undefined ? {} : { usage: reply.usage })
+
+/**
+ * Enter on an explain question's field (B.4): a too-short answer only gets a toast; otherwise
+ * the answer, cut to 600, goes to the grader under its own abort. The verdict comes from the
+ * points; a failed or unreadable grade, or `x`, hands grading to the learner.
+ */
+const submitAnswer = async ($: EngineInterface, text: string): Promise<void> => {
   if (isAnswerTooShort(text)) {
     $.ui.toast(TUTOR_TOO_SHORT)
     return
   }
-  const { after } = await changeTutor($, { kind: 'grading', epoch: tutorEpoch, given: text, at: await $.clock.now() })
-  if (after.phase !== 'grading') return
-  await dispatchTutor($, { kind: 'grade-failed' })
+  const at = await $.clock.now()
+  const waiting = await beginWait($, epoch => ({ kind: 'grading', epoch, given: text, at }))
+  if (waiting === undefined) return
+  const { epoch } = waiting
+  const question = currentQuestion(waiting.round)
+  // The held answer, already cut: the grader reads what the feedback will show.
+  const given = currentAnswer(waiting.round)?.given
+  if (question?.kind !== 'explain' || given === undefined) {
+    await showReply($, epoch, { kind: 'grade-failed' })
+    return
+  }
+  await withSpinner($, async () => {
+    try {
+      const reply = await askTutorModel($, gradeRequest(question, given, tutorConfig))
+      if (epoch !== tutorEpoch) return dropStale($)
+      const grade = reply.text === null ? null : parseGrade(reply.text, question.keyPoints.length)
+      if (grade === null) {
+        if (reply.text !== null) $.ui.log('mochi-crew: tutor grade reply invalid', { to: 'debug' })
+        await showReply($, epoch, { kind: 'grade-failed', ...spendOf(reply) })
+        return
+      }
+      if (!(await showReply($, epoch, { kind: 'graded', points: grade.points, note: grade.note, ...spendOf(reply) }))) return
+      await say($, verdictOf(grade.points) === 'right' ? 'tutor-right' : 'tutor-wrong', '')
+    } catch (error: unknown) {
+      $.ui.log(`mochi-crew: tutor could not grade an answer: ${String(error)}`, { to: 'debug' })
+      await showReply($, epoch, { kind: 'grade-failed' })
+    }
+  })
+}
+
+/** The diff excerpt a digest kept for `file`: own keys only, so a file named like an Object method reads nothing. */
+const excerptFor = (digest: Digest | null, file: string | undefined): string | undefined =>
+  digest !== null && file !== undefined && Object.hasOwn(digest.excerpts, file) ? digest.excerpts[file] : undefined
+
+/**
+ * Enter on the feedback's ask field (B.6): one capped completion on the tutor model, never a
+ * fork, with the round's diff excerpt for the question's file on digest rounds. A failure costs
+ * no follow-up and only says so in a toast; model text never goes there.
+ */
+const submitAsk = async ($: EngineInterface, text: string): Promise<void> => {
+  if (text.trim() === '') return
+  const at = await $.clock.now()
+  const waiting = await beginWait($, epoch => ({ kind: 'asking', epoch, at }))
+  if (waiting === undefined) return
+  const { epoch, round } = waiting
+  const question = currentQuestion(round)
+  const failAsk = async (reply?: TutorReply): Promise<void> => {
+    if (await showReply($, epoch, { kind: 'ask-failed', ...(reply === undefined ? {} : spendOf(reply)) })) $.ui.toast(TUTOR_ASK_FAILED)
+  }
+  if (question === undefined) return failAsk()
+  // Only a digest round sent the diff; a fork's prefix was the chat itself, and a review has none.
+  const excerpt = round.source === 'digest' ? excerptFor(tutorDigest, question.file) : undefined
+  await withSpinner($, async () => {
+    try {
+      const reply = await askTutorModel($, askRequest(question, currentAnswer(round), round.chat, text, excerpt, tutorConfig))
+      if (epoch !== tutorEpoch) return dropStale($)
+      // Cleaned here as well as in the reducer, so a blank reply counts as none and costs no follow-up.
+      const answer = reply.text === null ? '' : cleanModelText(reply.text)
+      if (answer === '') return failAsk(reply)
+      await showReply($, epoch, { kind: 'answered-ask', ask: text, reply: answer, ...spendOf(reply) })
+    } catch (error: unknown) {
+      $.ui.log(`mochi-crew: tutor could not answer a follow-up: ${String(error)}`, { to: 'debug' })
+      await failAsk()
+    }
+  })
+}
+
+/** A typed answer or follow-up. Never logged: it is the person's own text. */
+const submitTutorText = async ($: EngineInterface, purpose: TutorInputRow['purpose'], text: string): Promise<void> => {
+  try {
+    await (purpose === 'ask' ? submitAsk($, text) : submitAnswer($, text))
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor ${purpose} failed: ${String(error)}`, { to: 'debug' })
+  }
 }
 
 /** Runs a tutor control; a failure is logged and the tab stays as it was. */

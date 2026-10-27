@@ -353,6 +353,23 @@ describe('tutor round', () => {
     expect(EMPTY_USAGE).toEqual({ calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0 })
   })
 
+  test('grade and follow-up results add their spend to the round', async () => {
+    const call = usage(900, 0, 0, 60)
+    const grading = applyTutor({ phase: 'question', round: round(FIVE, { index: 2 }) }, { kind: 'grading', epoch: 5, given: 'longest root wins', at: 0 })
+    expect(roundOf(applyTutor(grading, { kind: 'graded', points: [true, true], note: '', usage: call })).usage).toEqual({ calls: 1, input: 900, cacheRead: 0, cacheWrite: 0, output: 60 })
+    // A mismatched grade and a failed one still cost what they cost.
+    expect(roundOf(applyTutor(grading, { kind: 'graded', points: [true], note: '', usage: call })).usage.calls).toBe(1)
+    expect(roundOf(applyTutor(grading, { kind: 'grade-failed', usage: call })).usage.calls).toBe(1)
+    // A refused call made no request, and a cancel carries no result.
+    expect(roundOf(applyTutor(grading, { kind: 'grade-failed' })).usage).toEqual(EMPTY_USAGE)
+    expect(roundOf(applyTutor(grading, { kind: 'cancel' })).usage).toEqual(EMPTY_USAGE)
+    const asked = apply(STATES.feedback, { kind: 'asking', epoch: 5, at: 0 }, { kind: 'answered-ask', ask: 'why?', reply: 'because', usage: call })
+    expect(roundOf(asked).usage.calls).toBe(1)
+    const failed = apply(asked, { kind: 'asking', epoch: 6, at: 0 }, { kind: 'ask-failed', usage: call })
+    expect(roundOf(failed).usage).toEqual({ calls: 2, input: 1_800, cacheRead: 0, cacheWrite: 0, output: 120 })
+    expect(roundOf(failed).followUpsUsed).toBe(1)
+  })
+
   test('describeFailure words every failure', async () => {
     expect(describeTutorFailure({ kind: 'bad-reply', why: 'too-few' })).toBe("the reply wasn't a quiz")
     expect(describeTutorFailure({ kind: 'api-error', status: 529, error: 'overloaded' })).toBe('model busy (529 overloaded). Try again in a bit.')

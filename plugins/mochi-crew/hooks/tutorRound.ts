@@ -38,12 +38,13 @@ export type TutorEvent =
   | { kind: 'skip' }
   | { kind: 'reveal' }
   | { kind: 'grading'; epoch: number; given: string; at: number }
-  | { kind: 'graded'; points: readonly boolean[]; note: string }
-  | { kind: 'grade-failed' }
+  /** `usage` on the four call results is that call's spend, added to the round's (C.7). */
+  | { kind: 'graded'; points: readonly boolean[]; note: string; usage?: ModelUsage }
+  | { kind: 'grade-failed'; usage?: ModelUsage }
   | { kind: 'self-graded'; outcome: 'right' | 'partial' | 'wrong' }
   | { kind: 'asking'; epoch: number; at: number }
-  | { kind: 'answered-ask'; ask: string; reply: string }
-  | { kind: 'ask-failed' }
+  | { kind: 'answered-ask'; ask: string; reply: string; usage?: ModelUsage }
+  | { kind: 'ask-failed'; usage?: ModelUsage }
   | { kind: 'next' }
   | { kind: 'finished'; xp: number; levelBefore: TutorLevel; levelAfter: TutorLevel; wasForkMiss: boolean }
   | { kind: 'retry-missed'; epoch: number; at: number }
@@ -196,6 +197,10 @@ const withAnswer = (round: TutorRound, answer: TutorAnswer): TutorRound => ({
   ...round,
   answers: [...round.answers.filter(held => held.questionId !== answer.questionId), answer],
 })
+
+/** The round with one more call's spend; a call that made no request (refused) has none. */
+const withSpend = (round: TutorRound, usage: ModelUsage | undefined): TutorRound =>
+  usage === undefined ? round : { ...round, usage: addTutorUsage(round.usage, usage) }
 
 const isMissed = (answer: TutorAnswer): boolean => answer.outcome !== 'right'
 
@@ -363,11 +368,13 @@ const onGrading = (state: WaitState, event: TutorEvent): TutorState => {
   const held = currentAnswer(round)
   switch (event.kind) {
     case 'graded': {
+      const spent = withSpend(round, event.usage)
       // A count mismatch can't be mapped onto the key points; let the learner grade instead.
-      if (question?.kind !== 'explain' || held === undefined || event.points.length !== question.keyPoints.length) return { phase: 'feedback', round }
-      return { phase: 'feedback', round: withAnswer(round, { ...held, outcome: verdictOf(event.points), points: event.points, note: event.note }) }
+      if (question?.kind !== 'explain' || held === undefined || event.points.length !== question.keyPoints.length) return { phase: 'feedback', round: spent }
+      return { phase: 'feedback', round: withAnswer(spent, { ...held, outcome: verdictOf(event.points), points: event.points, note: event.note }) }
     }
     case 'grade-failed':
+      return { phase: 'feedback', round: withSpend(round, event.usage) }
     case 'cancel':
       return { phase: 'feedback', round }
     case 'closed':
@@ -412,11 +419,13 @@ const onAsking = (state: WaitState, event: TutorEvent): TutorState => {
     case 'answered-ask': {
       // The reply is model text: cleaned here too, so a handler that forgot can't store raw escapes or echoed secrets.
       const exchange = { ask: cut(event.ask, MAX_ASK_CHARS), reply: cut(cleanModelText(event.reply), MAX_ASK_REPLY_CHARS) }
-      return { phase: 'feedback', round: { ...round, chat: [...round.chat, exchange], followUpsUsed: round.followUpsUsed + 1 } }
+      const spent = withSpend(round, event.usage)
+      return { phase: 'feedback', round: { ...spent, chat: [...spent.chat, exchange], followUpsUsed: spent.followUpsUsed + 1 } }
     }
     case 'ask-failed':
+      // A failed or cancelled follow-up costs the learner nothing (its tokens still count).
+      return { phase: 'feedback', round: withSpend(round, event.usage) }
     case 'cancel':
-      // A failed or cancelled follow-up costs the learner nothing.
       return { phase: 'feedback', round }
     case 'closed':
       return { phase: 'closed' }

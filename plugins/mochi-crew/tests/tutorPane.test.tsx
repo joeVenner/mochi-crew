@@ -479,7 +479,7 @@ const warmUp = async ($: $) => {
 }
 
 /** The tab on Home with consent given, mounted on `surface`. */
-const tutorTab = async ($: $, surface: 'terminal' | 'desktop' | 'mobile' = 'desktop') => {
+const tutorTab = async <S extends 'terminal' | 'desktop' | 'mobile' = 'desktop'>($: $, surface: S = 'desktop' as S) => {
   await $.command.run(mochi('tutor'))
   return $.ui.mount({ plugin: 'mochi-crew', surface, ...TAB, props: paneProps('Tutor') })
 }
@@ -922,34 +922,6 @@ describe('tutor rounds', () => {
     await ui.unmount()
   })
 
-  test('a typed answer goes to self-grading for now, and a too-short one makes no call', async ($, on) => {
-    mock.clock(on)
-    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))] })
-    await start($)
-    await warmUp($)
-    await $.command.run(mochi('tutor'))
-    const ui = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
-    await ui.press({ key: 'start:recent' })
-    for (let step = 0; step < 2; step++) {
-      const option = await ui.find({ type: 'Button', text: 'right answer' })
-      await ui.press({ key: option?.key ?? '' })
-      await ui.press({ key: 'next' })
-    }
-    await shows(ui, EXPLAIN_STEM)
-    const field = await ui.find({ type: 'Input' })
-    expect(field?.key).toMatch(/^answer:/)
-    await ui.input({ key: field?.key ?? '', text: ' x ' })
-    expect(record.toasts).toContain('type an answer, or press r to see it')
-    await shows(ui, EXPLAIN_STEM)
-    await ui.input({ key: field?.key ?? '', text: 'every section has its own cap' })
-    await shows(ui, "couldn't check automatically. How did you do?")
-    await shows(ui, 'every section has its own cap')
-    await ui.press({ key: 'self:partial' })
-    await shows(ui, '◐ partly')
-    expect(record.modelCalls).toBe(1)
-    await ui.unmount()
-  })
-
   test('a second start while one is written is turned away', async ($, on) => {
     const clock = mock.clock(on)
     const { record } = engine(on, { saved: { tutorConsent: 1 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5)), after: 30_000 }], clock })
@@ -984,6 +956,376 @@ describe('tutor rounds', () => {
     expect((await $.command.run(mochi('tutor stop'))).text).toBe('Tutor stopped.')
     // Scored on what was answered: one right, the rest unanswered.
     await shows(ui, 'Round done · 1/1 · +5 XP')
+    await ui.unmount()
+  })
+})
+
+// ── grading and follow-ups ──
+
+const GRADE_CALL: Usage = { input_tokens: 400, output_tokens: 40, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+const ASK_CALL: Usage = { input_tokens: 700, output_tokens: 90, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+const GRADE_NOTE = 'You named the caps; the diff is cut last.'
+const grade = (points: readonly boolean[], note = GRADE_NOTE) => reply(JSON.stringify({ v: 1, points, note }), GRADE_CALL)
+const ASK_REPLY = 'Because a refresh runs every few seconds.'
+
+/** Answers the choices before the explain question (the last in `quiz`), leaving its field on screen. */
+const toExplain = async (ui: Finder & { press: (t: { key: string }) => Promise<unknown> }) => {
+  for (let step = 0; step < 8; step++) {
+    if (await ui.find({ type: 'Text', text: EXPLAIN_STEM })) return
+    const option = await ui.find({ type: 'Button', text: 'right answer' })
+    await ui.press({ key: option?.key ?? '' })
+    await ui.press({ key: 'next' })
+  }
+}
+
+/** The key of the field on screen, or '' when there is none. */
+const fieldKey = async (ui: Finder): Promise<string> => (await ui.find({ type: 'Input' }))?.key ?? ''
+
+describe('tutor grading and follow-ups', () => {
+  for (const surface of SURFACES) {
+    test(`typing an answer calls the grader with the masked text and shows the points (${surface})`, async ($, on) => {
+      mock.clock(on)
+      const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, false])] })
+      await start($)
+      await warmUp($)
+      const ui = await tutorTab($, surface)
+      await ui.press({ key: 'start:recent' })
+      await toExplain(ui)
+      const key = await fieldKey(ui)
+      expect(key).toMatch(/^answer:/)
+      await ui.input({ key, text: 'each section is capped, API_KEY=sk-test-123456789abcdef' })
+      expect(record.completeRequests).toHaveLength(1)
+      const request = record.completeRequests[0]
+      expect(request?.model).toBe('haiku')
+      expect(request?.system).toContain("You grade a learner's short answer")
+      expect(request?.prompt).toContain('<answer>each section is capped')
+      expect(request?.prompt).toContain('1. each section is capped')
+      expect(request?.prompt).not.toContain('sk-test-123456789abcdef')
+      expect(record.forkPrompts).toHaveLength(1)
+      // Half the key points: partly, 3 XP, the points marked and the grader's note.
+      await shows(ui, '◐ partly')
+      await shows(ui, '+3 XP')
+      await shows(ui, 'you said')
+      await shows(ui, '✓ ')
+      await shows(ui, GRADE_NOTE)
+      await shows(ui, 'ref')
+      await lacks(ui, "couldn't check automatically")
+      // The grade's spend is the round's too: a fork and a grade.
+      await ui.press({ key: 'next' })
+      await shows(ui, '2 calls · fork')
+      await ui.unmount()
+    })
+  }
+
+  test('a failed grade offers self-grading', async ($, on) => {
+    mock.clock(on)
+    // A reply that is no grade, then an API error: both leave the grading to the learner.
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3)), reply(quiz(3))], completes: [reply('I think it is fine.', GRADE_CALL), failing(500, 'server_error')] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await toExplain(ui)
+    await ui.input({ key: await fieldKey(ui), text: 'every section has its own cap' })
+    await shows(ui, "couldn't check automatically. How did you do?")
+    await shows(ui, 'every section has its own cap')
+    await ui.press({ key: 'self:partial' })
+    await shows(ui, '◐ partly')
+    await ui.press({ key: 'next' })
+    await ui.press({ key: 'next' })
+    await ui.press({ key: 'start:recent' })
+    await toExplain(ui)
+    await ui.input({ key: await fieldKey(ui), text: 'every section has its own cap' })
+    await shows(ui, "couldn't check automatically. How did you do?")
+    expect(record.completeRequests).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test('a too-short answer makes no call', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await toExplain(ui)
+    await ui.input({ key: await fieldKey(ui), text: ' x  y ' })
+    expect(record.toasts).toContain('type an answer, or press r to see it')
+    expect(record.completeRequests).toHaveLength(0)
+    await shows(ui, EXPLAIN_STEM)
+    expect(await fieldKey(ui)).toMatch(/^answer:/)
+    await ui.unmount()
+  })
+
+  test('cancelling a grade hands it to the learner and the late grade changes nothing but spend', { plugins: [PROBE] }, async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [{ ...grade([true, true]), after: 10_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await toExplain(ui)
+    const typed = ui.input({ key: await fieldKey(ui), text: 'every section has its own cap' })
+    await clock.settle()
+    await shows(ui, 'checking your answer…')
+    await hasButton(ui, 'cancel')
+    await ui.press({ key: 'cancel' })
+    await shows(ui, "couldn't check automatically. How did you do?")
+    await clock.advance(10_000)
+    await typed
+    await shows(ui, "couldn't check automatically. How did you do?")
+    await lacks(ui, GRADE_NOTE)
+    await lacks(ui, '✓ solid')
+    expect(record.completeRequests).toHaveLength(1)
+    // The fork and the dropped grade both count for the session.
+    expect((await probe($, 'tutorSession') as { usage: { calls: number } }).usage.calls).toBe(2)
+    await ui.unmount()
+  })
+
+  test('typed text survives a redraw', async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await toExplain(ui)
+    const key = await fieldKey(ui)
+    await ui.input({ key, text: 'half typed', kind: 'change' })
+    // Well past several 180 ms ticks, each redrawing every pane.
+    await clock.advance(2_000)
+    // The kit reads what the hook drew, not the field's buffer: what keeps the typing is the
+    // same key and no `value` prop, which would replace it on every redraw.
+    const field = await ui.find({ type: 'Input' })
+    expect(field?.key).toBe(key)
+    expect(field?.props).not.toHaveProperty('value')
+    expect(field?.props).not.toHaveProperty('onInput')
+    // An edit reaches no handler: no call, no toast, the question still up.
+    expect(record.completeRequests).toHaveLength(0)
+    expect(record.toasts).toEqual([])
+    await shows(ui, EXPLAIN_STEM)
+    // Enter after the redraws still submits the whole text.
+    await ui.input({ key, text: 'half typed, then finished' })
+    expect(record.completeRequests[0]?.prompt).toContain('<answer>half typed, then finished</answer>')
+    await ui.unmount()
+  })
+})
+
+describe('tutor follow-ups and model text', () => {
+  for (const surface of SURFACES) {
+    test(`a follow-up makes one capped call and the field disappears after two (${surface})`, async ($, on) => {
+      mock.clock(on)
+      const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))], completes: [reply(ASK_REPLY, ASK_CALL), reply('The index lock is held only briefly.', ASK_CALL)] })
+      await start($)
+      await warmUp($)
+      const ui = await tutorTab($, surface)
+      await ui.press({ key: 'start:recent' })
+      const option = await ui.find({ type: 'Button', text: 'right answer' })
+      await ui.press({ key: option?.key ?? '' })
+      await shows(ui, '(2 left)')
+      const key = await fieldKey(ui)
+      expect(key).toMatch(/^ask:/)
+      await ui.input({ key, text: `why not a lock file? ${'and more '.repeat(80)}` })
+      expect(record.completeRequests).toHaveLength(1)
+      const request = record.completeRequests[0]
+      expect(request?.model).toBe('haiku')
+      expect(request?.system).toContain('You are Mochi, a patient coding tutor')
+      expect(request?.prompt).toContain('<ask>why not a lock file?')
+      expect(request?.prompt.length).toBeLessThanOrEqual(6_000)
+      // The ask is cut to 400 inside its tags; a fork round sends no diff excerpt.
+      expect((/<ask>([\s\S]*)<\/ask>/.exec(request?.prompt ?? '')?.[1] ?? '').length).toBeLessThanOrEqual(400)
+      expect(request?.prompt).not.toContain('kind="excerpt"')
+      expect(record.forkPrompts).toHaveLength(1)
+      await shows(ui, 'mochi')
+      await shows(ui, ASK_REPLY)
+      await shows(ui, '(1 left)')
+      await ui.input({ key: await fieldKey(ui), text: 'and then?' })
+      // The second call carries the first exchange.
+      expect(record.completeRequests[1]?.prompt).toContain(ASK_REPLY)
+      await shows(ui, 'The index lock is held only briefly.')
+      await shows(ui, 'out of follow-ups for this question')
+      expect(await ui.find({ type: 'Input' })).toBeUndefined()
+      await hasButton(ui, 'next')
+      expect(record.completeRequests).toHaveLength(2)
+      await ui.unmount()
+    })
+  }
+
+  test('a failed follow-up says so and keeps the count', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))], completes: [failing(500, 'server_error'), reply(' \n  ', ASK_CALL), reply(ASK_REPLY, ASK_CALL)] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    const option = await ui.find({ type: 'Button', text: 'right answer' })
+    await ui.press({ key: option?.key ?? '' })
+    await ui.input({ key: await fieldKey(ui), text: 'why?' })
+    expect(record.toasts).toEqual(["Mochi couldn't answer that one."])
+    await shows(ui, '(2 left)')
+    // A blank reply is no reply either.
+    await ui.input({ key: await fieldKey(ui), text: 'why?' })
+    expect(record.toasts).toHaveLength(2)
+    await shows(ui, '(2 left)')
+    // A blank ask makes no call.
+    await ui.input({ key: await fieldKey(ui), text: '   ' })
+    expect(record.completeRequests).toHaveLength(2)
+    await ui.input({ key: await fieldKey(ui), text: 'why?' })
+    await shows(ui, ASK_REPLY)
+    await shows(ui, '(1 left)')
+    await ui.unmount()
+  })
+
+  test('cancelling a follow-up keeps the count and drops the late reply', async ($, on) => {
+    const clock = mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(5))], completes: [{ ...reply(ASK_REPLY, ASK_CALL), after: 10_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    const option = await ui.find({ type: 'Button', text: 'right answer' })
+    await ui.press({ key: option?.key ?? '' })
+    const asked = ui.input({ key: await fieldKey(ui), text: 'why?' })
+    await clock.settle()
+    await shows(ui, 'Mochi is thinking…')
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
+    await ui.press({ key: 'cancel' })
+    await shows(ui, '(2 left)')
+    await clock.advance(10_000)
+    await asked
+    await lacks(ui, ASK_REPLY)
+    await shows(ui, '(2 left)')
+    expect(record.toasts).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a digest round sends the diff excerpt of the question\'s file with a follow-up', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    mock.clock(on)
+    const diff = [
+      'diff --git a/hooks/tutor.ts b/hooks/tutor.ts',
+      '--- a/hooks/tutor.ts',
+      '+++ b/hooks/tutor.ts',
+      '@@ -1,2 +1,3 @@',
+      ' export const one = 1',
+      '+export const capped = 16_000',
+      ' export const two = 2',
+      '',
+    ].join('\n')
+    const onFile = JSON.stringify({ v: 1, questions: [0, 1, 2].map(i => ({ ...choiceQ(i), file: 'hooks/tutor.ts' })) })
+    const { record } = engine(on, {
+      saved: { tutorConsent: 1 },
+      git: { log: COMMITS, diff, numstat: '1\t0\thooks/tutor.ts\n' },
+      completes: [reply(onFile, DIGEST_CALL), reply(ASK_REPLY, ASK_CALL)],
+    })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    const option = await ui.find({ type: 'Button', text: 'right answer' })
+    await ui.press({ key: option?.key ?? '' })
+    await ui.input({ key: await fieldKey(ui), text: 'where is the cap set?' })
+    const prompt = record.completeRequests[1]?.prompt ?? ''
+    expect(prompt).toContain('<data kind="excerpt">')
+    expect(prompt).toContain('export const capped = 16_000')
+    await shows(ui, ASK_REPLY)
+    await ui.unmount()
+  })
+
+  test('model text with ANSI and a markdown link renders as plain text with no Link', async ($, on) => {
+    mock.clock(on)
+    const hostile = {
+      ...choiceQ(0),
+      prompt: 'Question 0: why \u001b[31mred\u001b[0m and [the docs](https://evil.example/x)?',
+    }
+    const round = JSON.stringify({ v: 1, questions: [hostile, choiceQ(1), explainQ] })
+    const { record } = engine(on, {
+      saved: { tutorConsent: 1 },
+      forks: [reply(round)],
+      completes: [
+        reply('See [this link](https://evil.example/y) and \u001b]8;;https://evil.example\u0007here\u001b]8;;\u0007.', ASK_CALL),
+        grade([true, true], 'Good \u001b[1mjob\u001b[0m, see [docs](https://evil.example/z).'),
+      ],
+    })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, '[the docs](https://evil.example/x)')
+    const option = await ui.find({ type: 'Button', text: 'right answer' })
+    await ui.press({ key: option?.key ?? '' })
+    await ui.input({ key: await fieldKey(ui), text: 'why?' })
+    await shows(ui, '[this link](https://evil.example/y)')
+    await ui.press({ key: 'next' })
+    await ui.press({ key: (await ui.find({ type: 'Button', text: 'right answer' }))?.key ?? '' })
+    await ui.press({ key: 'next' })
+    await ui.input({ key: await fieldKey(ui), text: 'each section is capped and the diff goes last' })
+    await shows(ui, '✓ solid')
+    await shows(ui, '[docs](https://evil.example/z)')
+    expect(record.completeRequests).toHaveLength(2)
+    for (const type of ['Link', 'Markdown', 'Code']) expect(await ui.find({ type })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /\u001b|\u0007/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('open file shows on the terminal only for a file the session touched in its own checkout', async ($, on) => {
+    mock.clock(on)
+    on('tool.call', { tool: 'Edit' }, () => ({ result: {} as never, text: 'edited' }))
+    const questions = [
+      { ...choiceQ(0), file: 'hooks/tutor.ts' },
+      { ...choiceQ(1), file: 'hooks/other.ts' },
+      explainQ,
+    ]
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(JSON.stringify({ v: 1, questions }))] })
+    await start($)
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/hooks/tutor.ts', old_string: 'a', new_string: 'b' })
+    await warmUp($)
+    const ui = await tutorTab($, 'terminal')
+    await ui.press({ key: 'start:recent' })
+    await ui.press({ key: (await ui.find({ type: 'Button', text: 'right answer' }))?.key ?? '' })
+    await hasButton(ui, 'open-file')
+    await ui.press({ key: 'open-file' })
+    expect(record.toasts.some(text => text.includes('hooks/tutor.ts'))).toBe(true)
+    await ui.unmount()
+    // The same feedback on the desktop has no button, the file being the same.
+    const desk = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...TAB, props: paneProps('Tutor') })
+    await shows(desk, 'see')
+    expect(await desk.find({ type: 'Button', key: 'open-file' })).toBeUndefined()
+    // The model named a file the session never touched: it was dropped by the allowlist, so no button.
+    await desk.press({ key: 'next' })
+    await desk.unmount()
+    const term = await $.ui.mount({ plugin: 'mochi-crew', surface: 'terminal', ...TAB, props: paneProps('Tutor') })
+    await term.press({ key: (await term.find({ type: 'Button', text: 'right answer' }))?.key ?? '' })
+    await shows(term, '✓ right')
+    expect(await term.find({ type: 'Button', key: 'open-file' })).toBeUndefined()
+    await term.unmount()
+  })
+})
+
+describe('tutor explain on mobile', () => {
+  test('an explain question completes with buttons only and no grade call', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 1 }, forks: [reply(quiz(3))], completes: [grade([true, true])] })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($, 'mobile')
+    await ui.press({ key: 'start:recent' })
+    await toExplain(ui)
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
+    await hasButton(ui, 'reveal')
+    await ui.press({ key: 'reveal' })
+    await shows(ui, 'ref')
+    await shows(ui, 'How did you do?')
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
+    await ui.press({ key: 'self:right' })
+    await shows(ui, '✓ solid')
+    // No follow-ups on mobile either.
+    await lacks(ui, 'left)')
+    expect(await ui.find({ type: 'Input' })).toBeUndefined()
+    await ui.press({ key: 'next' })
+    await shows(ui, 'Round done · 3/3')
+    expect(record.completeRequests).toHaveLength(0)
+    expect(record.modelCalls).toBe(1)
     await ui.unmount()
   })
 })
