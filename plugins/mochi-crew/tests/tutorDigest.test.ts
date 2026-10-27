@@ -4,7 +4,9 @@ import type { TouchedFile } from '../types'
 import {
   DIGEST_CAPS,
   MAX_DIGEST_CHARS,
+  MAX_GIT_OUTPUT,
   buildDigest,
+  capGitOutput,
   capHunks,
   diffArgs,
   MAX_NEW_FILE_BYTES,
@@ -185,9 +187,25 @@ describe('tutorDigest', () => {
   test('the diff runs in two steps: a repository-wide name list, then literal allowed paths', async () => {
     expect(nameStatusArgs()).toEqual(['diff', '--name-status', '-z', '-M', '-C', '--no-relative', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ':/'])
     const scope = ['--no-renames', '--relative', 'HEAD', '--', ':(literal)src/a b.ts', ':(literal)*:odd']
-    expect(diffArgs(['src/a b.ts', '*:odd'])).toEqual(['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U2', ...scope])
+    expect(diffArgs(['src/a b.ts', '*:odd'])).toEqual(['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', '-U2', ...scope])
     expect(numstatArgs(['src/a b.ts', '*:odd'])).toEqual(['diff', '--numstat', '--no-color', '--no-ext-diff', '--no-textconv', ...scope])
     expect(logArgs()).toEqual(['log', '-n', '8', '--no-color', '--no-show-signature', '--format=%h%x09%s'])
+  })
+
+  test('capGitOutput keeps output up to 1 MB and cuts what is over', async () => {
+    expect(capGitOutput(undefined)).toBe(undefined)
+    expect(capGitOutput('')).toBe('')
+    const exact = 'x'.repeat(MAX_GIT_OUTPUT)
+    expect(capGitOutput(exact)).toBe(exact)
+    expect(capGitOutput(`${exact}yz`)).toBe(exact)
+  })
+
+  test('a capped name list loses only its cut entry', async () => {
+    const entry = 'M\0src/a-file-with-a-long-name.ts\0'
+    const huge = entry.repeat(Math.ceil(MAX_GIT_OUTPUT / entry.length) + 1)
+    const entries = parseNameStatus(capGitOutput(huge) ?? '')
+    expect(entries.length).toBe(Math.floor(MAX_GIT_OUTPUT / entry.length))
+    expect(entries.every(item => item.paths[0] === 'src/a-file-with-a-long-name.ts')).toBe(true)
   })
 
   test('parseNameStatus reads renames, copies and names with spaces from -z output', async () => {

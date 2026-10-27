@@ -33,7 +33,7 @@ import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit,
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
 import type { Digest, TranscriptRow } from './tutorDigest'
-import { buildDigest, diffArgs, isReadableNewFile, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
+import { buildDigest, capGitOutput, diffArgs, isReadableNewFile, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
 import type { ParseOutcome } from './tutorParse'
 import { cleanModelText, parseGrade, parseRound } from './tutorParse'
 import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
@@ -1394,6 +1394,10 @@ const readNewFiles = async ($: EngineInterface, root: string, touched: readonly 
   return read.flat()
 }
 
+/** A git command for the tutor: its longer timeout, and its output capped so a huge diff is never held whole. */
+const tutorGit = async ($: EngineInterface, root: string, args: readonly string[]): Promise<string | undefined> =>
+  capGitOutput(await gitOutput($, root, args, TUTOR_GIT_MS))
+
 /** The uncommitted changes a digest may show, read in two steps; each part is absent when git fails. */
 type DigestChanges = { readonly plan: DiffPlan; readonly numstat?: string; readonly diff?: string }
 
@@ -1404,8 +1408,8 @@ type DigestChanges = { readonly plan: DiffPlan; readonly numstat?: string; reado
  */
 const readChanges = async ($: EngineInterface, root: string, touched: readonly TouchedFile[], added: Readonly<Record<string, number>>): Promise<DigestChanges> => {
   const [prefix, listed] = await Promise.all([
-    gitOutput($, root, ['rev-parse', '--show-prefix'], TUTOR_GIT_MS),
-    gitOutput($, root, nameStatusArgs(), TUTOR_GIT_MS),
+    tutorGit($, root, ['rev-parse', '--show-prefix']),
+    tutorGit($, root, nameStatusArgs()),
   ])
   const none: DiffPlan = { paths: [], blocked: 0, omitted: 0 }
   if (prefix === undefined || listed === undefined) return { plan: none }
@@ -1415,8 +1419,8 @@ const readChanges = async ($: EngineInterface, root: string, touched: readonly T
   }
   if (plan.paths.length === 0) return { plan }
   const [numstat, diff] = await Promise.all([
-    gitOutput($, root, numstatArgs(plan.paths), TUTOR_GIT_MS),
-    gitOutput($, root, diffArgs(plan.paths), TUTOR_GIT_MS),
+    tutorGit($, root, numstatArgs(plan.paths)),
+    tutorGit($, root, diffArgs(plan.paths)),
   ])
   return { plan, numstat, diff }
 }
@@ -1425,9 +1429,9 @@ const readChanges = async ($: EngineInterface, root: string, touched: readonly T
 const gatherDigest = async ($: EngineInterface, root: string, focus: TutorFocus, touched: readonly TouchedFile[]): Promise<Digest> => {
   const snapshot = await read($, tree)
   const [log, changes, lsFiles, rows, newFiles] = await Promise.all([
-    gitOutput($, root, logArgs(), TUTOR_GIT_MS),
+    tutorGit($, root, logArgs()),
     readChanges($, root, touched, snapshot?.added ?? {}),
-    focus === 'project' ? gitOutput($, root, lsFilesArgs(), TUTOR_GIT_MS) : Promise.resolve(undefined),
+    focus === 'project' ? tutorGit($, root, lsFilesArgs()) : Promise.resolve(undefined),
     readTranscript($, root),
     readNewFiles($, root, touched, snapshot),
   ])
@@ -1518,7 +1522,7 @@ const writeQuestions = async ($: EngineInterface, order: RoundOrder): Promise<vo
 
   if (order.plan.source === 'fork') {
     const files = ownTouched(touched)
-    const commits = (await gitOutput($, root, logArgs(), TUTOR_GIT_MS)) ?? ''
+    const commits = (await tutorGit($, root, logArgs())) ?? ''
     if (epoch !== tutorEpoch) return dropStale($)
     const waited = await runFork($, forkPrompt({ ...ctx, files, commits }))
     if (epoch !== tutorEpoch) return dropStale($)

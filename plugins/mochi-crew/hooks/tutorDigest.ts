@@ -193,8 +193,22 @@ const literalSpecs = (paths: readonly string[]): readonly string[] => paths.map(
 // Renames are off: each allowed path is diffed as itself, so no other file's content rides along.
 const diffScope = (paths: readonly string[]): readonly string[] => ['--no-renames', '--relative', 'HEAD', '--', ...literalSpecs(paths)]
 
-/** `git diff` of the allowed paths against HEAD, two lines of context, paths relative to the root. */
-export const diffArgs = (paths: readonly string[]): readonly string[] => ['diff', ...DIFF_FLAGS, '-U2', ...diffScope(paths)]
+/**
+ * `git diff` of the allowed paths against HEAD, two lines of context, paths relative to the root.
+ * The prefixes are set on the command, which outranks a `diff.noprefix` or `diff.mnemonicPrefix`
+ * in the person's config: splitDiffByFile reads the paths after `a/` and `b/`.
+ */
+export const diffArgs = (paths: readonly string[]): readonly string[] => ['diff', ...DIFF_FLAGS, '--src-prefix=a/', '--dst-prefix=b/', '-U2', ...diffScope(paths)]
+
+/** The most of one git command's output the tutor keeps; the digest shows a small part of it. */
+export const MAX_GIT_OUTPUT = 1_000_000
+
+/**
+ * Git output cut to MAX_GIT_OUTPUT. What the cut leaves half-written is dropped downstream: a
+ * `-z` entry without its NUL, a numstat path the plan does not hold, a hunk past the cap.
+ */
+export const capGitOutput = (output: string | undefined): string | undefined =>
+  output === undefined || output.length <= MAX_GIT_OUTPUT ? output : output.slice(0, MAX_GIT_OUTPUT)
 
 /** `git diff --numstat` of the allowed paths against HEAD, scoped like the diff. */
 export const numstatArgs = (paths: readonly string[]): readonly string[] => ['diff', '--numstat', ...DIFF_FLAGS, ...diffScope(paths)]
