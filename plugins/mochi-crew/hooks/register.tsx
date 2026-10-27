@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, HookFailure, Register, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, HookFailure, Register, RenderSurface, SessionMeasureInput, Timer, ToolCallResult, TurnCompleteInput, UiPane } from 'claude-code'
 
-import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, Worker } from '../types'
+import type { Bug, CacheTotals, Care, CrewStats, FolderToggles, Gadget, Journal, Measure, Provider, TouchedFile, TreeEntry, TreeFocus, TreeSnapshot, TurnLedger, WorktreeSnapshot, MascotActivity, OutfitName, Quip, Reaction, Turn, TurnOutcome, TutorFocus, TutorProject, TutorRound, TutorSession, TutorState, Worker } from '../types'
 import type { Achievement, Facts } from './achievements'
 import { ACHIEVEMENTS, achievementList, newlyUnlocked, parseUnlocked } from './achievements'
 import { placeFor } from './badgePalette'
@@ -32,8 +32,14 @@ import { DONE_MS, SCENE_ROWS, cellsFor } from './sprite'
 import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit, noteGreenTests, settleTurn } from './progress'
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
-import type { TutorConfig } from './tutorPlan'
-import { DEFAULT_TUTOR_CONFIG, parseTutorConfig } from './tutorPlan'
+import { shuffleChoice } from './tutorParse'
+import type { TutorConfig, TutorPlanInput } from './tutorPlan'
+import { DEFAULT_TUTOR_CONFIG, choosePlan, parseTutorConfig, planLabel } from './tutorPlan'
+import { FRESH_PROJECT, dueCards, parseProgress, projectOf, withProject } from './tutorProgress'
+import type { TutorEvent } from './tutorRound'
+import { EMPTY_USAGE, applyTutor } from './tutorRound'
+import type { TutorAction, TutorControl, TutorInputRow, TutorRow, TutorTone, TutorViewContext } from './tutorView'
+import { tutorHudLabel, tutorScreen } from './tutorView'
 import type { ProviderEnv, TtlEnv } from './meter'
 import { EMPTY_CACHE, addUsage, certainlyColdAfterMs, describeFailure, detectProvider, isCacheUnreported, isCertainlyCold, settleProvider } from './meter'
 import type { Alert } from './meterAlerts'
@@ -71,7 +77,13 @@ const POLL_EVERY_TICKS = 6
 const MAX_STEP_FAILURES = 20
 
 /** Keys in $.store, which outlives the session. */
-const STORE = { stats: 'stats', outfit: 'outfit', isSoundOn: 'isSoundOn', care: 'care', achievements: 'achievements', isTreeOn: 'treeOn' } as const
+const STORE = {
+  stats: 'stats', outfit: 'outfit', isSoundOn: 'isSoundOn', care: 'care', achievements: 'achievements', isTreeOn: 'treeOn',
+  // A number: the tutor notice's version the person accepted.
+  tutorConsent: 'tutorConsent',
+  // A TutorProgressStore, keyed by project root and capped well under the store's budget.
+  tutorProgress: 'tutorProgress',
+} as const
 
 const SOUNDS = { done: 'sounds/done.wav', levelUp: 'sounds/levelup.wav', join: 'sounds/join.wav' } as const
 type Sound = (typeof SOUNDS)[keyof typeof SOUNDS]
@@ -217,19 +229,21 @@ const saveStats = async ($: EngineInterface, change: (score: CrewStats) => CrewS
   return after
 }
 
+/** A value earlier sessions saved, or undefined when the store cannot read it (logged). */
+const readSaved = ($: EngineInterface, key: string): Promise<unknown> =>
+  $.store.get(key).catch((error: unknown) => {
+    $.ui.log(`mochi-crew: could not read saved ${key}: ${String(error)}`, { to: 'debug' })
+    return undefined
+  })
+
 /** Restores what earlier sessions saved; anything malformed falls back to defaults. */
 const loadSaved = async ($: EngineInterface): Promise<void> => {
-  const readSaved = (key: string): Promise<unknown> =>
-    $.store.get(key).catch((error: unknown) => {
-      $.ui.log(`mochi-crew: could not read saved ${key}: ${String(error)}`, { to: 'debug' })
-      return undefined
-    })
-  const savedStats = parseStats(await readSaved(STORE.stats))
-  const savedOutfit = await readSaved(STORE.outfit)
-  const savedSound = await readSaved(STORE.isSoundOn)
-  const savedCare = await readSaved(STORE.care)
-  const savedAchievements = await readSaved(STORE.achievements)
-  const savedTreeOn = await readSaved(STORE.isTreeOn)
+  const savedStats = parseStats(await readSaved($, STORE.stats))
+  const savedOutfit = await readSaved($, STORE.outfit)
+  const savedSound = await readSaved($, STORE.isSoundOn)
+  const savedCare = await readSaved($, STORE.care)
+  const savedAchievements = await readSaved($, STORE.achievements)
+  const savedTreeOn = await readSaved($, STORE.isTreeOn)
   await update($, stats, (): CrewStats => savedStats)
   // Start the idle clock now, so Mochi does not wake up already asleep.
   const now = await $.clock.now()
@@ -435,10 +449,11 @@ const cyclePlace = ($: EngineInterface): Promise<string> => runBadgeCommand($, '
 const toggleSound = async ($: EngineInterface): Promise<string> =>
   runMascotCommand($, (await read($, isSoundOn)) ? 'sound off' : 'sound on')
 
-/** Runs a pane button's action; its answer shows as a toast. */
-const pressButton = async ($: EngineInterface, action: () => Promise<string>): Promise<void> => {
+/** Runs a pane button's action; its answer shows as a toast, and null shows none. */
+const pressButton = async ($: EngineInterface, action: () => Promise<string | null>): Promise<void> => {
   try {
-    $.ui.toast(await action())
+    const answer = await action()
+    if (answer !== null) $.ui.toast(answer)
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: button failed: ${String(error)}`, { to: 'debug' })
   }
@@ -916,6 +931,7 @@ const resetConversation = async ($: EngineInterface): Promise<void> => {
   await update($, meterCache, (): CacheTotals => EMPTY_CACHE)
   await update($, meterLastResponseAt, (): number | null => NO_RESPONSE)
   await update($, meterResponseModel, (): string | null => NO_MODEL)
+  await update($, tutorSession, (): TutorSession => FRESH_TUTOR_SESSION)
   await update($, meterAlerts, (): readonly string[] => NO_ALERTS)
   await update($, meterMeasure, (): Measure | null => NO_MEASURE)
 }
@@ -1018,6 +1034,8 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
     // so both must be the same spelling of the id.
     const answeredBy = await read($, meterModel)
     await update($, meterResponseModel, (): string | null => answeredBy)
+    // Claude answered again, so a fork that missed the cache earlier says nothing about it now.
+    await update($, tutorSession, current => (current.isForkSuspect ? { ...current, isForkSuspect: false } : current))
     await raiseAlerts($)
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: meter could not count a turn: ${String(error)}`, { to: 'debug' })
@@ -1026,29 +1044,320 @@ const noteMeterTurn = async ($: EngineInterface, e: TurnCompleteInput): Promise<
 
 // ── Mochi Tutor ──────────────────────────────────────────────────────────────────────
 // A quiz tab on the project and on what Claude changed. The pure logic lives in tutor*.ts; the
-// wiring is here because the engine follows `$` only within the hooks module.
+// wiring is here because the engine follows `$` only within the hooks module. The tab draws from
+// atoms only; every screen change happens in a handler, through `dispatchTutor`.
 
 const TUTOR_PANE = 'mochi-tutor'
 const TUTOR_TITLE = 'Tutor'
+/** The first-use notice's version: a stored consent below it shows the notice again. */
+const TUTOR_CONSENT_VERSION = 1
+/** At most this many due cards make one review round. */
+const REVIEW_ROUND_MAX = 5
+/** Text props for each tutor tone: the meter's, and green for a right answer. */
+const TUTOR_TONES: Readonly<Record<TutorTone, { color?: string; dimColor?: boolean; bold?: boolean }>> = {
+  ...METER_TONES,
+  good: { color: THEME.good },
+}
+// Opened from the main pane, the tab usually does not get the keys (the person holds them there).
+const TUTOR_UNFOCUSED = 'Tutor tab is open: press ctrl+x tab, or click it.'
+const TUTOR_UNPLACED = 'Tutor tab opened; widen the terminal to see it.'
+
+const TUTOR_CLOSED: TutorState = { phase: 'closed' }
+const NO_TUTOR_PROJECT: TutorProject | null = null
+const FRESH_TUTOR_SESSION: TutorSession = { rounds: 0, usage: EMPTY_USAGE, isForkSuspect: false }
+const tutor = atom({ plugin: 'mochi-crew', key: 'tutor' } as const, TUTOR_CLOSED)
+const tutorConsent = atom({ plugin: 'mochi-crew', key: 'tutorConsent' } as const, 0)
+const tutorProject = atom({ plugin: 'mochi-crew', key: 'tutorProject' } as const, NO_TUTOR_PROJECT)
+const tutorSession = atom({ plugin: 'mochi-crew', key: 'tutorSession' } as const, FRESH_TUTOR_SESSION)
 
 // The `/config` pickers, read once per load: a change there reloads the module, which drops a
 // round in flight along with every other module variable.
 let tutorConfig: TutorConfig = DEFAULT_TUTOR_CONFIG
+// A `-p` run has no tab to quiz in. Set by each session.start.
+let isInteractive = true
+// Where the tab last drew (a module variable, not state, so drawing may write it): a handler
+// works out the screen it just caused, and so its focus key, without render props.
+let tutorViewport: { readonly surface: RenderSurface; readonly columns: number; readonly bodyRows: number } = { surface: 'terminal', columns: 44, bodyRows: 30 }
+// Bumped by each round started; the round's shuffle seed.
+let tutorEpoch = 0
+
+/** A round asked for before the notice was accepted, started once it is. */
+type TutorPending = { readonly focus: TutorFocus; readonly isDigestOnly: boolean }
+
+/** Everything a tutor screen needs besides its state, read from atoms only (the tab draws from this). */
+const readTutorView = async ($: EngineInterface, state: TutorState): Promise<TutorViewContext> => {
+  const now = await $.clock.now()
+  const session = await read($, tutorSession)
+  const touched = await read($, treeTouched)
+  const snapshot = await read($, tree)
+  const input: TutorPlanInput = {
+    config: tutorConfig,
+    isDigestOnly: state.phase === 'home' && state.isDigestOnly,
+    lastResponseAt: await read($, meterLastResponseAt),
+    now,
+    isWorking: isThinking(await read($, turn)),
+    ttl: ttlEnv,
+    contextTokens: (await read($, meterMeasure))?.tokens,
+    modelNow: await read($, meterModel),
+    modelAtResponse: await read($, meterResponseModel),
+    isForkSuspect: session.isForkSuspect,
+  }
+  const plan = choosePlan(input)
+  // Only a file the session itself touched in its own checkout may open: a model-named path never does.
+  const openable = new Set(touched.filter(file => file.worktree === undefined).map(file => file.path))
+  return {
+    ...tutorViewport,
+    now,
+    plan,
+    canFork: choosePlan({ ...input, isDigestOnly: false }).source === 'fork',
+    planText: planLabel(plan, tutorConfig.model),
+    project: (await read($, tutorProject)) ?? FRESH_PROJECT,
+    session,
+    hasContent: (await read($, journal)).turns > 0 || touched.length > 0 || Object.keys(snapshot?.marks ?? {}).length > 0,
+    canOpenFile: file => openable.has(file),
+    model: tutorConfig.model,
+  }
+}
+
+/**
+ * Moves the tab's focus ring to what its screen asks for. A tab without the keys says no, the
+ * usual case after opening it from the main pane, so a refusal or failure only reaches the
+ * debug log: every control also works by click.
+ */
+const focusTutor = async ($: EngineInterface, state: TutorState): Promise<void> => {
+  try {
+    const key = tutorScreen(state, await readTutorView($, state)).focusKey
+    if (key === undefined) return
+    const moved = await $.ui.focus({ requestId: TUTOR_PANE, key })
+    if (moved.deny !== undefined) $.ui.log(`mochi-crew: tutor focus stayed put: ${moved.deny}`, { to: 'debug' })
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor could not move the focus: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+/** Applies one event to the latest screen and redraws; the screen it led to. */
+const showTutor = async ($: EngineInterface, event: TutorEvent): Promise<TutorState> => {
+  const shown = await update($, tutor, current => applyTutor(current, event))
+  $.ui.invalidate('ui.render')
+  return shown
+}
+
+/** One screen change from a handler: applied, drawn, and the focus moved onto it. */
+const dispatchTutor = async ($: EngineInterface, event: TutorEvent): Promise<TutorState> => {
+  const shown = await showTutor($, event)
+  await focusTutor($, shown)
+  return shown
+}
+
+/** Loads the saved consent and this project's progress once; a bad read starts fresh (logged). */
+const loadTutor = async ($: EngineInterface): Promise<void> => {
+  if ((await read($, tutorProject)) !== null) return
+  const savedConsent = await readSaved($, STORE.tutorConsent)
+  const saved = parseProgress(await readSaved($, STORE.tutorProgress))
+  const root = await $.session.root()
+  await update($, tutorConsent, () => (typeof savedConsent === 'number' && Number.isFinite(savedConsent) ? savedConsent : 0))
+  await update($, tutorProject, (): TutorProject | null => projectOf(saved, root))
+}
+
+const hasTutorConsent = async ($: EngineInterface): Promise<boolean> =>
+  (await read($, tutorConsent)) >= TUTOR_CONSENT_VERSION
+
+/** The tutor tab as the engine lists it, or undefined when it cannot say (logged). */
+const tutorPaneNow = async ($: EngineInterface): Promise<UiPane | undefined> => {
+  try {
+    return (await $.ui.panes()).find(pane => pane.id === TUTOR_PANE)
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: could not list the tutor tab: ${String(error)}`, { to: 'debug' })
+    return undefined
+  }
+}
+
+/**
+ * Opens or raises the tutor tab on the screen it was left on, the notice first until it is
+ * accepted; it never starts a round. Returns the toast saying how to reach the tab when it did
+ * not get the keys, else null.
+ */
+const openTutor = async ($: EngineInterface, pending?: TutorPending): Promise<string | null> => {
+  await loadTutor($)
+  const shown = await showTutor($, { kind: 'open', hasConsent: await hasTutorConsent($), ...(pending === undefined ? {} : { pending }) })
+  const opened = await $.ui.open({ id: TUTOR_PANE, title: TUTOR_TITLE, focus: true })
+  const pane = await tutorPaneNow($)
+  // Checked first: a tab waiting undrawn holds no keys either, and widening is what it needs.
+  if (!opened.isPlaced || pane?.isPlaced === false) return TUTOR_UNPLACED
+  if (pane?.isFocused !== true) return TUTOR_UNFOCUSED
+  await focusTutor($, shown)
+  return null
+}
+
+/** `y` on the notice: saved for next time, then Home, or the round asked for before it. */
+const acceptTutor = async ($: EngineInterface): Promise<void> => {
+  await update($, tutorConsent, () => TUTOR_CONSENT_VERSION)
+  // A failed save is logged by persist; the consent still holds until the process ends.
+  await persist($, STORE.tutorConsent, TUTOR_CONSENT_VERSION)
+  // Read inside the update, so a doubled `y` starts the pending round once.
+  let pending: TutorPending | undefined
+  const shown = await update($, tutor, current => {
+    pending = current.phase === 'consent' ? current.pending : undefined
+    return applyTutor(current, { kind: 'consented' })
+  })
+  $.ui.invalidate('ui.render')
+  if (pending !== undefined) return startRound($, pending.focus, pending.isDigestOnly)
+  await focusTutor($, shown)
+}
+
+/** `n` on the notice or `x: close`: the tab closes, and the next open starts from the notice or Home. */
+const closeTutor = async ($: EngineInterface, kind: 'declined' | 'closed'): Promise<void> => {
+  await showTutor($, { kind })
+  await $.ui.close({ id: TUTOR_PANE })
+}
+
+/**
+ * Starts a round on `focus`, asking for consent first. Rounds are not generated yet: for now
+ * it only remembers the focus on Home.
+ */
+const startRound = async ($: EngineInterface, focus: TutorFocus, isDigestOnly: boolean): Promise<void> => {
+  if (!(await hasTutorConsent($))) {
+    await dispatchTutor($, { kind: 'open', hasConsent: false, pending: { focus, isDigestOnly } })
+    return
+  }
+  await dispatchTutor($, { kind: 'pick-focus', focus })
+  $.ui.log('mochi-crew: tutor rounds are not generated yet', { to: 'debug' })
+}
+
+/**
+ * A review round from the deck's due cards, asked again as they were saved (choices reshuffled)
+ * with no model call. True when it is on screen.
+ */
+const startReview = async ($: EngineInterface): Promise<boolean> => {
+  const cards = dueCards((await read($, tutorProject)) ?? FRESH_PROJECT, REVIEW_ROUND_MAX)
+  if (cards.length === 0) return false
+  tutorEpoch += 1
+  const epoch = tutorEpoch
+  const now = await $.clock.now()
+  const state = await read($, tutor)
+  const round: TutorRound = {
+    // Unique across sessions, since a review card keeps its question's own id.
+    id: `review-${now}-${epoch}`,
+    epoch,
+    focus: state.phase === 'home' ? state.focus : 'recent',
+    source: 'review',
+    startedAt: now,
+    // Seeded per question, as the parser seeds a round, so equal-length option lists move apart.
+    questions: cards.map(({ question }, index) => ({ ...(question.kind === 'choice' ? shuffleChoice(question, epoch * 31 + index) : question), isReview: true as const })),
+    index: 0,
+    answers: [],
+    isHintShown: false,
+    isRetry: false,
+    chat: [],
+    followUpsUsed: 0,
+    usage: EMPTY_USAGE,
+  }
+  const shown = await dispatchTutor($, { kind: 'loaded', round })
+  return shown.phase === 'question' && shown.round.id === round.id
+}
+
+/** `x` while a round runs, and `/mascot tutor stop`: the round is dropped and the tab goes back. */
+const cancelTutor = async ($: EngineInterface): Promise<void> => {
+  await dispatchTutor($, { kind: 'cancel' })
+}
+
+/** The controls of a round on screen. Rounds are not generated yet, so none is drawn. */
+const pressRoundControl = ($: EngineInterface, action: TutorAction): void => {
+  $.ui.log(`mochi-crew: tutor control ${action.kind} is not wired yet`, { to: 'debug' })
+}
+
+/** A typed answer or follow-up. Never logged: it is the person's own text. */
+const submitTutorText = ($: EngineInterface, purpose: TutorInputRow['purpose']): void => {
+  $.ui.log(`mochi-crew: tutor ${purpose} field is not wired yet`, { to: 'debug' })
+}
+
+/** Runs a tutor control; a failure is logged and the tab stays as it was. */
+const pressTutor = async ($: EngineInterface, action: TutorAction): Promise<void> => {
+  try {
+    switch (action.kind) {
+      case 'consent':
+        return await acceptTutor($)
+      case 'decline':
+        return await closeTutor($, 'declined')
+      case 'close':
+        return await closeTutor($, 'closed')
+      case 'toggle-digest':
+        await dispatchTutor($, { kind: 'toggle-digest' })
+        return
+      case 'start': {
+        const state = await read($, tutor)
+        return await startRound($, action.focus, state.phase === 'home' && state.isDigestOnly)
+      }
+      case 'review':
+        await startReview($)
+        return
+      case 'cancel':
+        return await cancelTutor($)
+      case 'choose':
+      case 'hint':
+      case 'skip':
+      case 'reveal':
+      case 'self-grade':
+      case 'next':
+      case 'open-file':
+      case 'retry-missed':
+      case 'retry':
+      case 'try-digest':
+        return pressRoundControl($, action)
+    }
+  } catch (error: unknown) {
+    $.ui.log(`mochi-crew: tutor control ${action.kind} failed: ${String(error)}`, { to: 'debug' })
+  }
+}
+
+/** Forgets this project's level and deck, here and in the store; other projects keep theirs. */
+const resetTutorProgress = async ($: EngineInterface): Promise<boolean> => {
+  // Loaded first: a reset before the tab ever opened must not leave the saved consent unread.
+  await loadTutor($)
+  const root = await $.session.root()
+  const saved = parseProgress(await readSaved($, STORE.tutorProgress))
+  await update($, tutorProject, (): TutorProject | null => FRESH_PROJECT)
+  $.ui.invalidate('ui.render')
+  return persist($, STORE.tutorProgress, withProject(saved, root, FRESH_PROJECT))
+}
+
+const toastTutorHint = ($: EngineInterface, hint: string | null): void => {
+  if (hint !== null) $.ui.toast(hint)
+}
 
 /**
  * Answers `/mascot tutor [action]` with neutral text only: the line lands in the transcript, so
  * no question or model text ever goes in it.
  */
 const runTutorCommand = async ($: EngineInterface, verb: TutorVerb): Promise<string> => {
+  if (!isInteractive) return 'Tutor needs an interactive session.'
   switch (verb) {
     case 'open':
-    case 'start':
-    case 'digest':
-    case 'review':
-    case 'stop':
-    case 'reset':
-      await $.ui.open({ id: TUTOR_PANE, title: TUTOR_TITLE, focus: true })
+      toastTutorHint($, await openTutor($))
       return 'Tutor opened.'
+    case 'start':
+    case 'digest': {
+      const state = await read($, tutor)
+      const pending: TutorPending = { focus: state.phase === 'home' ? state.focus : 'recent', isDigestOnly: verb === 'digest' }
+      toastTutorHint($, await openTutor($, pending))
+      // Without consent the notice is on screen, holding the round until `y`.
+      if (!(await hasTutorConsent($))) return 'Tutor opened.'
+      await startRound($, pending.focus, pending.isDigestOnly)
+      return 'Tutor round starting in its tab.'
+    }
+    case 'review': {
+      await loadTutor($)
+      if (dueCards((await read($, tutorProject)) ?? FRESH_PROJECT, 1).length === 0) return 'No missed questions to review yet.'
+      toastTutorHint($, await openTutor($))
+      return (await startReview($)) ? 'Tutor round starting in its tab.' : 'Tutor opened.'
+    }
+    case 'stop':
+      await cancelTutor($)
+      return 'Tutor stopped.'
+    case 'reset':
+      return (await resetTutorProgress($))
+        ? 'Tutor progress for this project cleared.'
+        : 'Tutor progress for this project cleared (could not save it for next time).'
   }
 }
 
@@ -1420,6 +1729,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => (logFailure($, 'session.measure', next.error), next(e)))
 
   on('session.start', async ($, e, next) => {
+    isInteractive = e.isInteractive
     await loadSaved($)
     // Local state only, so it is cheap to await; done first so no turn is counted and then wiped.
     await resetConversation($).catch((error: unknown) =>
@@ -1429,8 +1739,8 @@ export const register: Register = (on, options) => {
     for (const name of MASCOT_COMMANDS) {
       await $.command.register({
         name,
-        description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, set the session badge, change outfit, toggle sound',
-        argumentHint: '[journal | missions | achievements | meter | files [on|off] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]',
+        description: 'Open the Mochi crew pane, read the session journal or meter, show the file tree, quiz you on the project, set the session badge, change outfit, toggle sound',
+        argumentHint: '[journal | missions | achievements | meter | files [on|off] | tutor [start|digest|review|stop|reset] | badge [on|off|color <name>|title <text>|auto] | place [<name>] | outfits | outfit <name> | sound on|off]',
       })
     }
     void $.ui.open({ id: PANE, title: TITLE })
@@ -1546,9 +1856,10 @@ export const register: Register = (on, options) => {
     const diary = await read($, journal)
     const diaryLine = journalLine(diary)
     const goalLine = missionLine(await read($, missions), diary)
+    // A live bug wins over a round in the tutor tab, which wins over what Mochi is doing.
     const label = liveBug !== null && isBugAlive(liveBug) && current.kind === 'idle'
       ? `fighting a bug · ${liveBug.command}`
-      : activityLabel(current, now, isThinking(currentTurn))
+      : tutorHudLabel(await read($, tutor)) ?? activityLabel(current, now, isThinking(currentTurn))
     const { Box, Text, Button } = $.ui.resolve(e)
     // Only the terminal draws the scene above the HUD.
     const isTerminal = e.surface === 'terminal'
@@ -1736,6 +2047,7 @@ export const register: Register = (on, options) => {
           <Button key="place" hotkey="b" plain label="place" onPress={() => void pressButton($, () => cyclePlace($))} />
           <Button key="sound" hotkey="s" plain label={soundOn ? 'mute' : 'sound'} onPress={() => void pressButton($, () => toggleSound($))} />
           <Button key="files" hotkey="t" plain label="files" onPress={() => void pressButton($, () => runMascotCommand($, 'files'))} />
+          <Button key="tutor" hotkey="q" plain label="tutor" onPress={() => void pressButton($, () => openTutor($))} />
         </Box>
       </Box>
     )
@@ -1760,6 +2072,59 @@ export const register: Register = (on, options) => {
           cells={sceneCells}
         />
         {hud}
+      </Box>
+    )
+  })
+
+  // The tutor tab draws its screen from atoms only; presses and submits change it in handlers.
+  on('ui.render', { component: 'Pane', requestId: TUTOR_PANE }, async ($, e) => {
+    tutorViewport = { surface: e.surface, columns: e.props.bodyColumns, bodyRows: e.props.scroll.bodyRows }
+    const state = await read($, tutor)
+    const screen = tutorScreen(state, await readTutorView($, state))
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const line = (row: TutorRow) => (
+      // Questions, reasons and replies wrap; the rest is cut, so the controls stay in view.
+      <Text key={row.key} wrap={row.isWrapped ? 'wrap' : 'truncate-end'}>
+        {row.cells.map((part, index) => (
+          // Model text was cleaned when parsed; drawn as plain Text, cleaned once more.
+          <Text key={String(index)} {...TUTOR_TONES[part.tone]}>{safeText(part.text)}</Text>
+        ))}
+      </Text>
+    )
+    const control = (item: TutorControl) => (
+      <Button
+        key={item.key}
+        plain
+        label={safeText(item.label)}
+        {...(item.hotkey === undefined ? {} : { hotkey: item.hotkey })}
+        onPress={() => void pressTutor($, item.action)}
+      />
+    )
+    // Options and starts read as a list, one per row; the other controls share a row.
+    const isListed = (item: TutorControl) =>
+      item.action.kind === 'choose' || item.action.kind === 'start' || item.action.kind === 'review' || item.action.kind === 'self-grade'
+    const field = screen.input
+    // Mobile has no Input: its screens never ask for one, and this keeps a stray one off it.
+    // No `value` either: the ticker redraws every pane, and a value would wipe what is typed.
+    const typing = field !== undefined && 'Input' in elements
+      ? (
+        <elements.Input
+          key={field.key}
+          label={field.label}
+          placeholder={field.placeholder}
+          submitLabel={field.submitLabel}
+          onSubmit={() => submitTutorText($, field.purpose)}
+        />
+      )
+      : null
+    return (
+      <Box flexDirection="column" alignItems="flex-start" paddingX={1}>
+        {screen.header.map(line)}
+        {screen.body.map(line)}
+        {typing}
+        <Box flexDirection="column">{screen.controls.filter(isListed).map(control)}</Box>
+        <Box flexDirection="row" gap={2}>{screen.controls.filter(item => !isListed(item)).map(control)}</Box>
       </Box>
     )
   })
