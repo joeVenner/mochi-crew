@@ -1,6 +1,9 @@
 import type {
+  FlashRating,
   OptionQuestion,
   ExplainQuestion,
+  LineQuestion,
+  TutorCode,
   TutorAnswer,
   TutorFocus,
   TutorOutcome,
@@ -15,6 +18,8 @@ import type {
 import { safeText } from './fileTree'
 import { gutter, ruleFor } from './hud'
 import { formatTokens } from './meter'
+import { CODE_WINDOW, codeWindow, findQuote, parseHunks, shownNumber } from './tutorCode'
+import type { Hunk } from './tutorCode'
 import type { TutorPlan } from './tutorPlan'
 import { dueCards } from './tutorProgress'
 import { currentAnswer, currentQuestion, describeTutorFailure, followUpsLeft, isAwaitingSelfGrade, isLastQuestion, scoreRound, xpForAnswer } from './tutorRound'
@@ -36,17 +41,34 @@ export type TutorAction =
   | { kind: 'consent' } | { kind: 'decline' } | { kind: 'start'; focus: TutorFocus } | { kind: 'review' } | { kind: 'toggle-digest' }
   | { kind: 'choose'; index: number } | { kind: 'hint' } | { kind: 'skip' } | { kind: 'reveal' } | { kind: 'self-grade'; outcome: 'right' | 'partial' | 'wrong' }
   | { kind: 'next' } | { kind: 'open-file' } | { kind: 'retry-missed' } | { kind: 'retry' } | { kind: 'try-digest' } | { kind: 'cancel' } | { kind: 'close' }
+  | { kind: 'keep' } | { kind: 'cards' } | { kind: 'flip' } | { kind: 'rate'; rating: FlashRating } | { kind: 'cards-end' } | { kind: 'home' }
 
 /** The one text field a screen may hold: the typed answer or a follow-up. Drawn with no `value`. */
 export type TutorInputRow = { readonly key: string; readonly label: string; readonly placeholder: string; readonly submitLabel: string; readonly purpose: 'answer' | 'ask' }
 
-/** A whole tutor screen as data: the renderer draws header, body, input, then the controls last. */
+/**
+ * A code card to draw with `<Code format="diff">`: `source` is one hunk the plugin cut from a
+ * masked diff, never model text, already windowed to the rows the pane has. `key` changes with
+ * the window, so a narrower one is drawn afresh; `caption` goes under it.
+ */
+export type TutorCodeView = { readonly key: string; readonly path: string; readonly source: string; readonly caption?: string }
+
+/** How a card's frame is drawn: a face of a flashcard, a verdict, or neither. */
+export type TutorFrameTone = 'front' | 'back' | 'right' | 'wrong' | 'neutral'
+
+/**
+ * A whole tutor screen as data: the renderer draws header, body, input, then the controls last.
+ * With `frame`, the header and body sit inside a rounded border in that tone (B.4); `code` is
+ * drawn inside it right after the body row keyed `stem`, or first in the body when none is.
+ */
 export type TutorScreen = {
   readonly header: readonly TutorRow[]
   readonly body: readonly TutorRow[]
   readonly input?: TutorInputRow
   readonly controls: readonly TutorControl[]
   readonly focusKey?: string
+  readonly code?: TutorCodeView
+  readonly frame?: { readonly tone: TutorFrameTone }
 }
 
 /** Everything a screen needs besides the state, already read by the render hook. */
@@ -76,6 +98,16 @@ const SHOWN_EXCHANGES = 2
 const GO_READ_MAX = 3
 /** Width of the `1: ` prefix, and so of a choice's hanging indent. */
 const CHOICE_INDENT = 3
+/** Code lines drawn at most when the screen is tight on rows (B.4). */
+export const CODE_TIGHT_LINES = 8
+/** Fewer code lines than this read as noise, so the card folds to its caption. */
+const CODE_MIN_LINES = 3
+/** Rows a frame's border takes: its top and bottom. */
+const FRAME_ROWS = 2
+/** Rows an input field is assumed to take, its own border included. */
+const INPUT_ROWS = 3
+/** Boxes of the review deck, for the `●●○` a card shows. */
+const BOXES = 3
 const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 
 const TAG_LABELS: Readonly<Record<TutorTag, string>> = { what: 'WHAT', how: 'HOW', why: 'WHY', 'what-if': 'WHAT IF' }
@@ -200,8 +232,16 @@ export const choiceLines = (index: number, text: string, columns: number): reado
   return [`${prefix}${first}`, `${' '.repeat(CHOICE_INDENT)}${second}`]
 }
 
-/** The main HUD's line while a round is on screen: `quizzing you · q 2/5`; null otherwise. */
+/**
+ * Whether the renderer lists a control on a row of its own: options, starts, the review and
+ * self-grades read as a list; every other control shares one row.
+ */
+export const isListedControl = (control: TutorControl): boolean =>
+  control.action.kind === 'choose' || control.action.kind === 'start' || control.action.kind === 'review' || control.action.kind === 'self-grade'
+
+/** The main HUD's line while a round or flashcards are on screen: `quizzing you · q 2/5`; null otherwise. */
 export const tutorHudLabel = (state: TutorState): string | null => {
+  if (state.phase === 'cards') return `flashcards · card ${Math.min(state.flash.index + 1, state.flash.ids.length)}/${state.flash.ids.length}`
   // `asking` sits inside feedback; leaving it out would blank the label mid-question.
   if (state.phase !== 'question' && state.phase !== 'feedback' && state.phase !== 'grading' && state.phase !== 'asking') return null
   const { round } = state
@@ -280,6 +320,95 @@ const hintControl = (question: TutorQuestion, round: TutorRound): readonly Tutor
   question.hint === undefined || round.isHintShown ? [] : [{ key: 'hint', label: 'hint', hotkey: 'h', action: { kind: 'hint' } }]
 
 const skipControl: TutorControl = { key: 'skip', label: 'skip', hotkey: 's', action: { kind: 'skip' } }
+
+// ── code cards (B.4) ───────────────────────────────────────────────────────
+
+/** Rows one body or header row takes once wrapped at the pane's width. */
+const rowLines = (line: TutorRow, columns: number): number =>
+  line.isWrapped ? Math.max(1, wrapWords(line.cells.map(part => part.text).join(''), lineWidth(columns)).length) : 1
+
+/**
+ * Rows a screen takes besides its code: header, body, field, controls and frame. An estimate the
+ * renderer's wrapping can only beat, as listed controls count up to two rows and shared ones wrap.
+ */
+const screenLines = (screen: TutorScreen, ctx: TutorViewContext): number => {
+  const width = lineWidth(ctx.columns)
+  const text = [...screen.header, ...screen.body].reduce((sum, line) => sum + rowLines(line, ctx.columns), 0)
+  const listed = screen.controls
+    .filter(isListedControl)
+    .reduce((sum, control) => sum + Math.min(2, Math.max(1, wrapWords(control.label, Math.max(4, width - CHOICE_INDENT)).length)), 0)
+  const shared = screen.controls.filter(control => !isListedControl(control))
+  // Each shared control is `k: label` and a two-cell gap.
+  const sharedWidth = shared.reduce((sum, control) => sum + control.label.length + (control.hotkey === undefined ? 0 : 3) + 2, 0)
+  const sharedLines = shared.length === 0 ? 0 : Math.ceil(sharedWidth / width)
+  return text + listed + sharedLines + (screen.input === undefined ? 0 : INPUT_ROWS) + (screen.frame === undefined ? 0 : FRAME_ROWS)
+}
+
+/**
+ * The hunk lines a window must hold: every option's line for a line question (none when one is
+ * missing, so the card folds), else the focus line, or the hunk's first line without one.
+ */
+const focusIndices = (question: TutorQuestion, code: TutorCode, hunk: Hunk): readonly number[] => {
+  if (question.kind === 'line') {
+    const found = question.options.map(option => findQuote([hunk], option)?.line)
+    return found.every((index): index is number => index !== undefined) ? found : []
+  }
+  const at = code.focusLine === undefined ? -1 : hunk.lines.findIndex(line => shownNumber(line) === code.focusLine)
+  return [Math.max(0, at)]
+}
+
+const codePlace = (code: TutorCode, separator: string): string =>
+  code.focusLine === undefined ? clean(code.file) : `${clean(code.file)}${separator}line ${code.focusLine}`
+
+const afterStem = (screen: TutorScreen, extra: TutorRow): TutorScreen => {
+  const at = screen.body.findIndex(line => line.key === 'stem')
+  return { ...screen, body: [...screen.body.slice(0, at + 1), extra, ...screen.body.slice(at + 1)] }
+}
+
+/**
+ * A question screen as a card (B.4): framed in `tone`, with the question's code card windowed to
+ * the rows left over. A full screen draws up to CODE_WINDOW lines and a tight one
+ * CODE_TIGHT_LINES around the focus; a folded screen, or one with fewer than CODE_MIN_LINES to
+ * spare, draws only a caption row, so the code never pushes the controls out of the pane.
+ */
+const asCard = (screen: TutorScreen, question: TutorQuestion | undefined, ctx: TutorViewContext, tone: TutorFrameTone): TutorScreen => {
+  const framed: TutorScreen = { ...screen, frame: { tone } }
+  const code = question?.code
+  if (question === undefined || code === undefined) return framed
+  const fold = tutorFold(ctx.bodyRows)
+  const most = fold === 'full' ? CODE_WINDOW : fold === 'tight' ? CODE_TIGHT_LINES : 0
+  // Two more rows go to the code: its `@@` line, if the surface draws one, and the caption.
+  const lines = Math.min(most, ctx.bodyRows - screenLines(framed, ctx) - 2)
+  const hunk = parseHunks(code.diff)[0]
+  const indices = hunk === undefined ? [] : focusIndices(question, code, hunk)
+  const source = hunk === undefined || lines < CODE_MIN_LINES || indices.length === 0
+    ? null
+    : hunk.lines.length <= lines ? code.diff : codeWindow(hunk, indices, lines)
+  if (hunk === undefined || source === null) {
+    return afterStem(framed, textRow('code-fold', `code: ${codePlace(code, ' ')} · make the pane taller to see it`, 'dim', false))
+  }
+  return { ...framed, code: { key: `code:${question.id}:${Math.min(lines, hunk.lines.length)}`, path: code.file, source, caption: codePlace(code, ' · ') } }
+}
+
+/** Whether a line question's option is a removed line, numbered on the old side. */
+const isRemovedLine = (question: LineQuestion, index: number): boolean => {
+  const hunks = parseHunks(question.code.diff)
+  const match = findQuote(hunks, question.options[index] ?? '')
+  return match !== null && hunks[match.hunk]?.lines[match.line]?.marker === '-'
+}
+
+/**
+ * An option as a button or echo reads it. A line question's is `L42  <line>`, `old L42` for a
+ * removed line, so an added and a removed line sharing a number still read apart; it is cut to
+ * one row, since the code card above already shows the whole line.
+ */
+const optionLabel = (question: OptionQuestion, index: number, ctx: TutorViewContext): string => {
+  const text = clean(question.options[index] ?? '')
+  if (question.kind !== 'line') return text
+  const label = `${isRemovedLine(question, index) ? 'old ' : ''}L${question.lineNumbers[index] ?? '?'}  ${text}`
+  const width = Math.max(4, lineWidth(ctx.columns) - CHOICE_INDENT)
+  return label.length > width ? withEllipsis(label, width) : label
+}
 
 // ── screens ────────────────────────────────────────────────────────────────
 
@@ -383,14 +512,14 @@ const loadingScreen = (state: Extract<TutorState, { phase: 'loading' }>, ctx: Tu
 /** S3a: a choice question. No input on screen, so the digit hotkeys stay live. */
 const choiceScreen = (round: TutorRound, question: OptionQuestion, ctx: TutorViewContext): TutorScreen => {
   const fold = tutorFold(ctx.bodyRows)
-  const options: readonly TutorControl[] = question.options.map((option, index) => ({
+  const options: readonly TutorControl[] = question.options.map((_option, index) => ({
     key: `opt:${question.id}:${index}`,
     // A plain Button draws `1: ` itself; wrapping its label is the renderer's job.
-    label: clean(option),
+    label: optionLabel(question, index, ctx),
     hotkey: String(index + 1),
     action: { kind: 'choose', index },
   }))
-  return {
+  const screen: TutorScreen = {
     header: headerOf(questionHeader(round, tagTail(question)), ctx, fold),
     body: bodyOf([
       ...questionPreamble(question),
@@ -400,6 +529,7 @@ const choiceScreen = (round: TutorRound, question: OptionQuestion, ctx: TutorVie
     controls: [...options, ...hintControl(question, round), skipControl, endControl],
     focusKey: options[0]?.key,
   }
+  return asCard(screen, question, ctx, 'front')
 }
 
 /** S3b and S3c: an explain question; mobile has no Input, so it reveals and self-grades. */
@@ -412,7 +542,7 @@ const explainScreen = (round: TutorRound, question: ExplainQuestion, ctx: TutorV
   const controls: readonly TutorControl[] = isMobile
     ? [reveal, ...hintControl(question, round), skipControl, endControl]
     : [...hintControl(question, round), reveal, skipControl, endControl]
-  return {
+  const screen: TutorScreen = {
     header: headerOf(questionHeader(round, tagTail(question)), ctx, fold),
     body: bodyOf([
       ...questionPreamble(question),
@@ -423,6 +553,7 @@ const explainScreen = (round: TutorRound, question: ExplainQuestion, ctx: TutorV
     controls,
     focusKey: isMobile ? 'reveal' : answerKey,
   }
+  return asCard(screen, question, ctx, 'front')
 }
 
 /** S5: the explain header while the grader reads the answer. */
@@ -438,6 +569,7 @@ const gradingScreen = (state: WaitState, ctx: TutorViewContext): TutorScreen => 
     ], ctx, fold),
     controls: [cancelControl],
     focusKey: 'cancel',
+    frame: { tone: 'neutral' },
   }
 }
 
@@ -470,7 +602,7 @@ const tempting = (question: OptionQuestion): number | undefined => {
 }
 
 const choiceFeedbackRows = (question: OptionQuestion, answer: TutorAnswer, ctx: TutorViewContext, fold: Fold): readonly TutorRow[] => {
-  const correct = question.options[question.answer] ?? ''
+  const correct = optionLabel(question, question.answer, ctx)
   const correctWhy = clean(question.why[question.answer] ?? '')
   const picked = answer.picked
   if (answer.outcome === 'right') {
@@ -484,7 +616,7 @@ const choiceFeedbackRows = (question: OptionQuestion, answer: TutorAnswer, ctx: 
   return [
     ...(picked === undefined
       ? []
-      : [labelled('you', 'you', clean(question.options[picked] ?? ''), 'dim'), labelled('you-why', '', clean(question.why[picked] ?? ''), 'dim')]),
+      : [labelled('you', 'you', optionLabel(question, picked, ctx), 'dim'), labelled('you-why', '', clean(question.why[picked] ?? ''), 'dim')]),
     labelled('answer', 'answer', clean(correct), 'good'),
     labelled('why', 'why', correctWhy),
   ]
@@ -546,7 +678,8 @@ const answeredFeedback = (round: TutorRound, question: TutorQuestion, answer: Tu
         ...(canOpen ? [{ key: 'open-file', label: 'open file', hotkey: 'o', action: { kind: 'open-file' } } satisfies TutorControl] : []),
         endControl,
       ]
-  return {
+  const tone: TutorFrameTone = answer.outcome === 'right' ? 'right' : answer.outcome === 'wrong' ? 'wrong' : 'neutral'
+  const screen: TutorScreen = {
     header: headerOf(header, ctx, fold),
     body: bodyOf([
       ...(question.kind === 'explain' ? explainFeedbackRows(question, answer, ctx) : choiceFeedbackRows(question, answer, ctx, fold)),
@@ -559,6 +692,7 @@ const answeredFeedback = (round: TutorRound, question: TutorQuestion, answer: Tu
     // The ask field is never focused, so `n` and the other hotkeys keep working.
     focusKey: isAsking ? 'cancel' : 'next',
   }
+  return asCard(screen, question, ctx, tone)
 }
 
 /** S4 for an explain question with no grade yet (revealed, on mobile, or the grader failed): self-grade. */
@@ -568,7 +702,7 @@ const ungradedFeedback = (round: TutorRound, question: ExplainQuestion, ctx: Tut
   // A held answer with typed text means the grade failed or was cancelled; a reveal holds nothing.
   const held = currentAnswer(round)
   const wasTyped = held?.given !== undefined
-  return {
+  const screen: TutorScreen = {
     header: headerOf(header, ctx, fold),
     body: bodyOf([
       ...(held === undefined ? [] : saidRows(held, ctx)),
@@ -584,6 +718,7 @@ const ungradedFeedback = (round: TutorRound, question: ExplainQuestion, ctx: Tut
     ],
     focusKey: 'self:right',
   }
+  return asCard(screen, question, ctx, 'neutral')
 }
 
 const feedbackScreen = (round: TutorRound, askingSince: number | null, ctx: TutorViewContext): TutorScreen => {

@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ChoiceQuestion, ExplainQuestion, TutorAnswer, TutorProject, TutorRound, TutorState } from '../types'
+import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorAnswer, TutorCode, TutorProject, TutorRound, TutorState } from '../types'
+import { CODE_WINDOW, isCodeDiff, lineCode, parseHunks, quoteCode } from '../hooks/tutorCode'
 import { FRESH_PROJECT } from '../hooks/tutorProgress'
 import { EMPTY_USAGE } from '../hooks/tutorRound'
-import { choiceLines, progressPips, tutorFold, tutorHudLabel, tutorScreen } from '../hooks/tutorView'
+import { CODE_TIGHT_LINES, choiceLines, isListedControl, progressPips, tutorFold, tutorHudLabel, tutorScreen } from '../hooks/tutorView'
 import type { TutorRow, TutorScreen, TutorViewContext } from '../hooks/tutorView'
 
 const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
@@ -70,6 +71,42 @@ const ctx = (over: Partial<TutorViewContext> = {}): TutorViewContext => ({
 })
 
 const right: TutorAnswer = { questionId: 'r1:0', outcome: 'right', hasUsedHint: false, picked: 0 }
+
+/** Eight context lines, a removed and two added lines, eight more: line 9 is both the removed and the first added line. */
+const HUNK = [
+  '@@ -1,17 +1,18 @@',
+  ...Array.from({ length: 8 }, (_, index) => ` const a${index} = ${index}`),
+  '-const old = 1',
+  '+const fresh = 2',
+  '+const more = 3',
+  ...Array.from({ length: 8 }, (_, index) => ` const b${index} = ${index}`),
+].join('\n')
+
+const quoted = (quote: string): TutorCode => {
+  const code = quoteCode('src/x.ts', parseHunks(HUNK), quote)
+  if (code === null) throw new Error(`no line ${quote}`)
+  return code
+}
+
+const lineQuestion = (quotes: readonly string[], answer = 1): LineQuestion => {
+  const found = lineCode('src/x.ts', parseHunks(HUNK), quotes)
+  if (found === null) throw new Error('no line card')
+  return {
+    id: 'r1:0',
+    kind: 'line',
+    tag: 'how',
+    topic: 'fresh value',
+    prompt: 'Which line sets the fresh value?',
+    options: found.picks.map(pick => pick.text),
+    answer,
+    why: found.picks.map((_pick, index) => `reason ${index}`),
+    lineNumbers: found.picks.map(pick => pick.number),
+    code: found.code,
+  }
+}
+
+/** The code lines a screen draws, its `@@` header left out. */
+const codeLines = (screen: TutorScreen): readonly string[] => screen.code?.source.split('\n').slice(1) ?? []
 
 /** One of every phase and sub-screen, so the guarantees are checked everywhere. */
 const everyState = (): readonly TutorState[] => [
@@ -416,6 +453,106 @@ describe('tutor view', () => {
     const unbroken = choiceLines(1, 'x'.repeat(200), 30)
     expect(unbroken.length).toBe(2)
     for (const line of unbroken) expect(line.length <= 28).toBe(true)
+  })
+
+  test('a code card draws under the stem in a front frame, windowed to the rows left', async () => {
+    const code = quoted('const fresh = 2')
+    const state: TutorState = { phase: 'question', round: round({ questions: [choice({ code })] }) }
+    const full = tutorScreen(state, ctx({ bodyRows: 40 }))
+    expect(full.frame).toEqual({ tone: 'front' })
+    expect(full.code?.path).toBe('src/x.ts')
+    expect(full.code?.caption).toBe('src/x.ts · line 9')
+    expect(full.code?.source).toBe(code.diff)
+    expect(codeLines(full)).toHaveLength(CODE_WINDOW)
+    expect(full.code?.key).toBe(`code:r1:0:${CODE_WINDOW}`)
+    // Tight: at most eight lines, still around the focus line, and a fresh key so it redraws.
+    const tight = tutorScreen(state, ctx({ bodyRows: 24 }))
+    expect(tutorFold(24)).toBe('full')
+    const tighter = tutorScreen(state, ctx({ bodyRows: 11 }))
+    expect(codeLines(tighter).length <= CODE_TIGHT_LINES).toBe(true)
+    for (const screen of [tight, tighter]) {
+      if (screen.code === undefined) continue
+      expect(isCodeDiff(screen.code.source)).toBe(true)
+      expect(codeLines(screen)).toContain('+const fresh = 2')
+    }
+    expect(tighter.code?.key).not.toBe(full.code?.key)
+    // Folded: the caption only, under the stem.
+    const folded = tutorScreen(state, ctx({ bodyRows: 7 }))
+    expect(folded.code).toBe(undefined)
+    expect(textOf(rowKeyed(folded, 'code-fold'))).toBe('code: src/x.ts line 9 · make the pane taller to see it')
+    const keys = folded.body.map(line => line.key)
+    expect(keys.indexOf('code-fold')).toBe(keys.indexOf('stem') + 1)
+  })
+
+  test('a code card never takes more rows than the pane has', async () => {
+    const states: readonly TutorState[] = [
+      { phase: 'question', round: round({ questions: [choice({ code: quoted('const b7 = 7') })] }) },
+      { phase: 'question', round: round({ questions: [explain({ id: 'r1:0', code: quoted('const a0 = 0') })] }) },
+      { phase: 'question', round: round({ questions: [lineQuestion(['const old = 1', 'const fresh = 2', 'const more = 3'])] }) },
+      { phase: 'feedback', round: round({ questions: [choice({ code: quoted('const fresh = 2') })], answers: [right] }) },
+    ]
+    for (const surface of SURFACES) {
+      for (const state of states) {
+        for (let bodyRows = 4; bodyRows <= 44; bodyRows += 1) {
+          const screen = tutorScreen(state, ctx({ surface, bodyRows }))
+          if (screen.code === undefined) {
+            expect(rowKeyed(screen, 'code-fold')).not.toBe(undefined)
+            continue
+          }
+          expect(isCodeDiff(screen.code.source)).toBe(true)
+          // Every row at least once, listed controls one each, the rest sharing a row, the field and the border.
+          const listed = screen.controls.filter(isListedControl).length
+          const shared = screen.controls.length > listed ? 1 : 0
+          const others = [...screen.header, ...screen.body].length + listed + shared + (screen.input === undefined ? 0 : 3) + 2
+          expect(codeLines(screen).length + 2 + others <= bodyRows ? 'fits' : `${surface} ${state.phase} ${bodyRows}: ${codeLines(screen).length} + 2 + ${others}`).toBe('fits')
+          expect(codeLines(screen).length <= (tutorFold(bodyRows) === 'full' ? CODE_WINDOW : CODE_TIGHT_LINES)).toBe(true)
+        }
+      }
+    }
+  })
+
+  test('line options read L and the number, old for a removed line, and the window holds them all', async () => {
+    const question = lineQuestion(['const more = 3', 'const old = 1', 'const fresh = 2'])
+    const screen = tutorScreen({ phase: 'question', round: round({ questions: [question] }) }, ctx({ bodyRows: 40 }))
+    expect(screen.controls.filter(control => control.action.kind === 'choose').map(control => control.label)).toEqual([
+      'old L9  const old = 1',
+      'L9  const fresh = 2',
+      'L10  const more = 3',
+    ])
+    expect(screen.code?.caption).toBe('src/x.ts · line 9')
+    for (const text of ['-const old = 1', '+const fresh = 2', '+const more = 3']) expect(codeLines(screen)).toContain(text)
+    // A long line is cut to one row: the card above shows it whole.
+    const long = { ...question, options: question.options.map(option => `${option} ${'x'.repeat(80)}`) }
+    const narrow = tutorScreen({ phase: 'question', round: round({ questions: [long] }) }, ctx({ columns: 30 }))
+    for (const control of narrow.controls.filter(isListedControl)) expect(control.label.length <= 25).toBe(true)
+    // Graded locally like a choice; the echo names the line.
+    const feedback = tutorScreen({ phase: 'feedback', round: round({ questions: [question], answers: [{ ...right, outcome: 'wrong', picked: 0 }] }) }, ctx({ bodyRows: 40 }))
+    expect(textOf(rowKeyed(feedback, 'you'))).toContain('old L9  const old = 1')
+    expect(textOf(rowKeyed(feedback, 'answer'))).toContain('L9 const fresh = 2')
+    expect(feedback.frame).toEqual({ tone: 'wrong' })
+  })
+
+  test('a line card whose options span more than the room folds to its caption', async () => {
+    const question = lineQuestion(['const a0 = 0', 'const b4 = 4'], 0)
+    const screen = tutorScreen({ phase: 'question', round: round({ questions: [question] }) }, ctx({ bodyRows: 11 }))
+    expect(screen.code).toBe(undefined)
+    expect(textOf(rowKeyed(screen, 'code-fold'))).toBe('code: src/x.ts line 1 · make the pane taller to see it')
+    expect(screen.controls.filter(isListedControl).map(control => control.label)).toEqual(['L1  const a0 = 0', 'L15  const b4 = 4'])
+  })
+
+  test('frames follow the verdict; screens between rounds have none', async () => {
+    const tone = (state: TutorState) => tutorScreen(state, ctx()).frame?.tone
+    expect(tone({ phase: 'question', round: round() })).toBe('front')
+    expect(tone({ phase: 'question', round: round({ index: 1, answers: [right] }) })).toBe('front')
+    expect(tone({ phase: 'feedback', round: round({ answers: [right] }) })).toBe('right')
+    expect(tone({ phase: 'feedback', round: round({ answers: [{ ...right, outcome: 'wrong', picked: 1 }] }) })).toBe('wrong')
+    expect(tone({ phase: 'feedback', round: round({ answers: [{ ...right, outcome: 'skipped', picked: undefined }] }) })).toBe('neutral')
+    expect(tone({ phase: 'feedback', round: round({ index: 1, answers: [right] }) })).toBe('neutral')
+    expect(tone({ phase: 'asking', round: round({ answers: [right] }), epoch: 1, since: 0 })).toBe('right')
+    expect(tone({ phase: 'grading', round: round({ index: 1 }), epoch: 1, since: 0 })).toBe('neutral')
+    for (const state of everyState().filter(held => !['question', 'feedback', 'grading', 'asking'].includes(held.phase))) expect(tone(state)).toBe(undefined)
+    // No code card, no code.
+    expect(tutorScreen({ phase: 'question', round: round() }, ctx()).code).toBe(undefined)
   })
 
   test('tutorHudLabel reads quizzing you q 2/5 during a round, null otherwise', async () => {
