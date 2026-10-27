@@ -2109,9 +2109,10 @@ describe('tutor flashcards', () => {
       await lacks(main, 'flashcards ·')
       expect((store.get('stats') as { xp: number }).xp).toBe(1)
       expect(await main.find({ type: 'Text', text: /2\/3 right\. Nice work\.|Round done: 2\/3\./ })).toBeDefined()
-      // Two cards are left, so another session can open; Home goes back.
-      await hasButton(ui, 'cards')
-      await ui.press({ key: 'home' })
+      // Two cards are left, so another session opens over them; ending it unrated goes Home.
+      await ui.press({ key: 'cards' })
+      await shows(ui, 'card 1/2')
+      await ui.press({ key: 'end' })
       await shows(ui, 'LV 1 · 4 rounds')
       expect(record.modelCalls).toBe(0)
       expect(await ui.find({ type: 'Input' })).toBeUndefined()
@@ -2162,6 +2163,7 @@ describe('tutor flashcards', () => {
     const deck = Array.from({ length: 12 }, (_, i) => ({ box: 1, dueRound: 1, question: { ...project.deck[0]?.question, id: `r1-q${i}`, topic: `topic ${i}` } }))
     const { store } = engine(on, { saved: { tutorConsent: 2, tutorProgress: { v: 1, projects: { '/repo': { ...project, deck } } } } })
     await start($)
+    const main = await $.ui.mount({ plugin: 'mochi-crew', surface: 'desktop', ...MAIN, props: paneProps('Mochi') })
     const ui = await tutorTab($)
     for (const expected of ['+10 XP', '+0 XP']) {
       await ui.press({ key: 'cards' })
@@ -2169,11 +2171,30 @@ describe('tutor flashcards', () => {
         if (await ui.find({ type: 'Text', text: 'Flashcards:' })) break
         await ui.press({ key: 'flip' })
         await ui.press({ key: 'rate:good' })
+        // Three good in a row earn Mochi's line.
+        if (step === 2) expect(await main.find({ type: 'Text', text: /Right\.|You know this one\.|Exactly\./ })).toBeDefined()
       }
       await shows(ui, expected)
       await ui.press({ key: 'home' })
     }
     expect((store.get('stats') as { xp: number }).xp).toBe(10)
+    await main.unmount()
+    await ui.unmount()
+  })
+
+  test('a rating the store refuses still moves the session on and counts', async ($, on) => {
+    mock.clock(on)
+    const { record } = engine(on, { saved: { tutorConsent: 2, tutorProgress: flashStore }, failingSaves: ['tutorProgress'] })
+    await start($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'cards' })
+    await ui.press({ key: 'flip' })
+    await ui.press({ key: 'rate:again' })
+    await shows(ui, 'card 2/3')
+    await ui.press({ key: 'end' })
+    await shows(ui, 'Flashcards: 1 rated · 1 again · +0 XP')
+    expect(record.saves).not.toContain('tutorProgress')
+    expect(record.logs.some(line => line.includes('tutor control rate failed'))).toBe(false)
     await ui.unmount()
   })
 
