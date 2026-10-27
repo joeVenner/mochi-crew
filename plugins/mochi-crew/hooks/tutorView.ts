@@ -20,7 +20,7 @@ import type {
 import { safeText } from './fileTree'
 import { gutter, ruleFor } from './hud'
 import { formatTokens } from './meter'
-import { flashCurrent, isCardDue } from './tutorCards'
+import { canKeepCard, flashCurrent, isCardDue } from './tutorCards'
 import { CODE_WINDOW, codeWindow, findQuote, parseHunks, shownNumber } from './tutorCode'
 import type { Hunk } from './tutorCode'
 import type { TutorPlan } from './tutorPlan'
@@ -446,6 +446,13 @@ const consentScreen = (ctx: TutorViewContext): TutorScreen => {
   }
 }
 
+/** `c: cards (12)`, or `(3 due)` when some are, while the deck holds any (A.2); nothing to call, so no content needed. */
+const cardsControl = (project: TutorProject, label: (due: number) => string): readonly TutorControl[] => {
+  if (project.deck.length === 0) return []
+  const due = dueCards(project, project.deck.length).length
+  return [{ key: 'cards', label: label(due), hotkey: 'c', action: { kind: 'cards' } }]
+}
+
 const usageWords = (usage: TutorUsage): string =>
   `${formatTokens(usage.input + usage.cacheWrite)} in · ${formatTokens(usage.cacheRead)} cached · ${formatTokens(usage.output)} out`
 
@@ -476,6 +483,7 @@ const homeScreen = (state: Extract<TutorState, { phase: 'home' }>, ctx: TutorVie
   const controls: readonly TutorControl[] = [
     ...starts,
     ...(due > 0 ? [{ key: 'review', label: `review ${due} missed  no model call`, hotkey: 'r', action: { kind: 'review' } } satisfies TutorControl] : []),
+    ...cardsControl(ctx.project, dueNow => `cards (${dueNow > 0 ? `${dueNow} due` : ctx.project.deck.length})`),
     ...(ctx.canFork
       ? [{ key: 'toggle-digest', label: state.isDigestOnly ? 'use session again' : 'use digest instead', hotkey: 'g', action: { kind: 'toggle-digest' } } satisfies TutorControl]
       : []),
@@ -674,10 +682,13 @@ const answeredFeedback = (round: TutorRound, question: TutorQuestion, answer: Tu
         ? [textRow('ask-left', `(${left} left)`, 'dim', false)]
         : [textRow('ask-out', 'out of follow-ups for this question', 'dim', false)]
   const canOpen = ctx.surface === 'terminal' && question.file !== undefined && ctx.canOpenFile(question.file)
+  // Gone once kept, as the deck then holds it. A miss is kept anyway when the round ends; keeping it sooner is harmless.
+  const canKeep = canKeepCard(ctx.project, question)
   const controls: readonly TutorControl[] = isAsking
     ? [cancelControl]
     : [
         { key: 'next', label: isLastQuestion(round) ? 'finish' : 'next', hotkey: 'n', action: { kind: 'next' } },
+        ...(canKeep ? [{ key: 'keep', label: 'keep card', hotkey: 'k', action: { kind: 'keep' } } satisfies TutorControl] : []),
         ...(canOpen ? [{ key: 'open-file', label: 'open file', hotkey: 'o', action: { kind: 'open-file' } } satisfies TutorControl] : []),
         endControl,
       ]
@@ -838,6 +849,7 @@ const summaryScreen = (state: Extract<TutorState, { phase: 'summary' }>, ctx: Tu
       // `next` from the summary returns home with this round's focus preselected.
       { key: 'next', label: 'new round', hotkey: 'n', action: { kind: 'next' } },
       ...(hasMissed ? [{ key: 'retry-missed', label: 'retry missed', hotkey: 'r', action: { kind: 'retry-missed' } } satisfies TutorControl] : []),
+      ...cardsControl(ctx.project, () => 'cards'),
       closeControl('done'),
     ],
     focusKey: 'next',
