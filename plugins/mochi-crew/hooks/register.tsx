@@ -33,7 +33,7 @@ import { FRESH_LEDGER, XP_PER_GREEN_TESTS, beginLedger, isTestCommand, noteEdit,
 import { completeTurn, isThinking, isTurnTrouble, keepTurnAlive, startTurn, touchTurn, turnLabel } from './turn'
 import { MIN_SCENE_WIDTH, sceneWidthFor } from './world'
 import type { Digest, TranscriptRow } from './tutorDigest'
-import { buildDigest, diffArgs, isSecretPath, logArgs, lsFilesArgs, numstatArgs, toTranscriptRows } from './tutorDigest'
+import { buildDigest, diffArgs, isSecretPath, logArgs, lsFilesArgs, nameStatusArgs, numstatArgs, planDiff, toTranscriptRows, type DiffPlan } from './tutorDigest'
 import type { ParseOutcome } from './tutorParse'
 import { cleanModelText, parseGrade, parseRound } from './tutorParse'
 import type { TutorConfig, TutorPlan, TutorPlanInput } from './tutorPlan'
@@ -1385,17 +1385,44 @@ const readNewFiles = async ($: EngineInterface, root: string, touched: readonly 
   return read.flat()
 }
 
+/** The uncommitted changes a digest may show, read in two steps; each part is absent when git fails. */
+type DigestChanges = { readonly plan: DiffPlan; readonly numstat?: string; readonly diff?: string }
+
+/**
+ * Lists the changes repository-wide first, renames found, and keeps only paths whose old and new
+ * names are both safe; then diffs just those, by literal path. One step with exclude pathspecs
+ * would let `git mv .env config.txt` through, since pathspecs apply before rename detection.
+ */
+const readChanges = async ($: EngineInterface, root: string, touched: readonly TouchedFile[], added: Readonly<Record<string, number>>): Promise<DigestChanges> => {
+  const [prefix, listed] = await Promise.all([
+    gitOutput($, root, ['rev-parse', '--show-prefix'], TUTOR_GIT_MS),
+    gitOutput($, root, nameStatusArgs(), TUTOR_GIT_MS),
+  ])
+  const none: DiffPlan = { paths: [], blocked: 0, omitted: 0 }
+  if (prefix === undefined || listed === undefined) return { plan: none }
+  const plan = planDiff(listed, prefix.replace(/\n$/, ''), touched, added)
+  if (plan.blocked > 0 || plan.omitted > 0) {
+    $.ui.log(`mochi-crew: tutor digest left out ${plan.blocked} secret-shaped and ${plan.omitted} extra changed files`, { to: 'debug' })
+  }
+  if (plan.paths.length === 0) return { plan }
+  const [numstat, diff] = await Promise.all([
+    gitOutput($, root, numstatArgs(plan.paths), TUTOR_GIT_MS),
+    gitOutput($, root, diffArgs(plan.paths), TUTOR_GIT_MS),
+  ])
+  return { plan, numstat, diff }
+}
+
 /** The masked digest of the project and this session (C.4); its reads run in parallel, and a part that fails is left out. */
 const gatherDigest = async ($: EngineInterface, root: string, focus: TutorFocus, touched: readonly TouchedFile[]): Promise<Digest> => {
   const snapshot = await read($, tree)
-  const [log, numstat, diff, lsFiles, rows, newFiles] = await Promise.all([
+  const [log, changes, lsFiles, rows, newFiles] = await Promise.all([
     gitOutput($, root, logArgs(), TUTOR_GIT_MS),
-    gitOutput($, root, numstatArgs(), TUTOR_GIT_MS),
-    gitOutput($, root, diffArgs(), TUTOR_GIT_MS),
+    readChanges($, root, touched, snapshot?.added ?? {}),
     focus === 'project' ? gitOutput($, root, lsFilesArgs(), TUTOR_GIT_MS) : Promise.resolve(undefined),
     readTranscript($, root),
     readNewFiles($, root, touched, snapshot),
   ])
+  const { plan, numstat, diff } = changes
   return buildDigest({
     rootName: snapshot?.rootName ?? root.split(/[\\/]/).filter(part => part !== '').at(-1) ?? root,
     branch: snapshot?.branch,
@@ -1408,6 +1435,7 @@ const gatherDigest = async ($: EngineInterface, root: string, focus: TutorFocus,
     rows,
     touched,
     added: snapshot?.added ?? {},
+    plan,
   })
 }
 

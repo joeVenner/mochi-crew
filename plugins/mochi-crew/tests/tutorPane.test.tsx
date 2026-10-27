@@ -36,7 +36,7 @@ type Message = { role: 'user' | 'assistant'; text: string; toolUses: { tool_use_
 type EngineOptions = {
   saved?: Readonly<Record<string, unknown>>
   tab?: TabPlace
-  /** Git's stdout per subcommand (`log`, `diff`, `numstat`, `ls-files`); any other is not a repository. */
+  /** Git's stdout per subcommand (`log`, `diff`, `numstat`, `name-status`, `ls-files`); any other is not a repository. */
   git?: Readonly<Record<string, string>>
   messages?: readonly Message[]
   /** Files on disk by absolute path; any other read fails as missing. */
@@ -124,7 +124,9 @@ const engine = (on: On, { saved = {}, tab = { isFocused: true, isPlaced: true },
   on('process.run', ($, e) => {
     const args = e.argv.slice(4)
     if (e.argv[0] === 'git') record.gitCalls.push(args)
-    const verb = args[0] === 'diff' && args.includes('--numstat') ? 'numstat' : args[0] ?? ''
+    const verb = args[0] === 'diff' && args.includes('--numstat') ? 'numstat'
+      : args[0] === 'diff' && args.includes('--name-status') ? 'name-status'
+      : args[0] ?? ''
     const stdout = git[verb]
     // Without a planned answer, not a repository: the tree and the digest stay empty.
     return stdout === undefined
@@ -781,7 +783,7 @@ describe('tutor rounds', () => {
     ].join('\n')
     const { record } = engine(on, {
       saved: { tutorConsent: 1 },
-      git: { log: COMMITS, diff, numstat: '1\t0\thooks/tutor.ts\n1\t0\t.env\n' },
+      git: { log: COMMITS, 'rev-parse': '\n', 'name-status': 'M\0hooks/tutor.ts\0M\0.env\0', diff, numstat: '1\t0\thooks/tutor.ts\n1\t0\t.env\n' },
       messages: [
         { role: 'user', text: 'Add the tutor tab please', toolUses: [] },
         { role: 'assistant', text: 'Done.', toolUses: [{ tool_use_id: 'u1', tool: 'Bash', input: { command: 'cat secrets.txt' }, result: { stdout: 'TOOL-RESULT-SENTINEL' }, text: 'TOOL-RESULT-SENTINEL' }] },
@@ -805,6 +807,31 @@ describe('tutor rounds', () => {
     expect(diffs).toHaveLength(1)
     expect(diffs[0]).toContain('--no-textconv')
     expect(diffs[0]).toContain('--no-ext-diff')
+    expect(diffs[0]).toContain(':(literal)hooks/tutor.ts')
+    expect(diffs[0]).not.toContain(':(literal).env')
+    await ui.unmount()
+  })
+
+  test('the digest never diffs a file renamed from .env, and skips the diff when nothing is allowed', { options: { tutorContext: 'digest' } }, async ($, on) => {
+    mock.clock(on)
+    // What git would print for the renamed file if it were asked: its content must never be asked for.
+    const diff = ['diff --git a/config.txt b/config.txt', 'new file mode 100644', '--- /dev/null', '+++ b/config.txt', '@@ -0,0 +1 @@', '+API_TOKEN=renamed-env-content', ''].join('\n')
+    const { record } = engine(on, {
+      saved: { tutorConsent: 1 },
+      git: { log: COMMITS, 'rev-parse': '\n', 'name-status': 'R100\0.env\0config.txt\0', diff, numstat: '1\t0\tconfig.txt\n' },
+      completes: [reply(quiz(5), DIGEST_CALL)],
+    })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, FIRST_STEM)
+    const prompt = record.completeRequests[0]?.prompt ?? ''
+    expect(prompt).not.toContain('renamed-env-content')
+    expect(prompt).not.toContain('config.txt')
+    // The tree's own numstat reads run unscoped; only the tutor's step two is `--relative`.
+    expect(record.gitCalls.filter(args => args[0] === 'diff' && args.includes('--relative'))).toEqual([])
+    expect(record.gitCalls.some(args => args.includes('--name-status'))).toBe(true)
     await ui.unmount()
   })
 
@@ -1214,7 +1241,7 @@ describe('tutor follow-ups and model text', () => {
     const onFile = JSON.stringify({ v: 1, questions: [0, 1, 2].map(i => ({ ...choiceQ(i), file: 'hooks/tutor.ts' })) })
     const { record } = engine(on, {
       saved: { tutorConsent: 1 },
-      git: { log: COMMITS, diff, numstat: '1\t0\thooks/tutor.ts\n' },
+      git: { log: COMMITS, 'rev-parse': '\n', 'name-status': 'M\0hooks/tutor.ts\0', diff, numstat: '1\t0\thooks/tutor.ts\n' },
       completes: [reply(onFile, DIGEST_CALL), reply(ASK_REPLY, ASK_CALL)],
     })
     await start($)

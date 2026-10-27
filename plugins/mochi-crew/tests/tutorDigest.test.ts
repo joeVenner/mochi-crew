@@ -2,7 +2,6 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { TouchedFile } from '../types'
 import {
-  DIFF_EXCLUDES,
   DIGEST_CAPS,
   MAX_DIGEST_CHARS,
   buildDigest,
@@ -11,8 +10,12 @@ import {
   isSecretPath,
   layoutSummary,
   logArgs,
+  MAX_DIFF_PATHS,
   maskForModel,
+  nameStatusArgs,
   numstatArgs,
+  parseNameStatus,
+  planDiff,
   orderDiffFiles,
   splitDiffByFile,
   toTranscriptRows,
@@ -109,14 +112,50 @@ describe('tutorDigest', () => {
     }
   })
 
-  test('DIFF_EXCLUDES covers env, keys, lockfiles and dist', async () => {
-    for (const pattern of ['**/.env*', '**/*.pem', '**/*.key', '**/id_rsa*', '**/package-lock.json', '**/yarn.lock', '**/*.lock', '**/dist/**', '**/node_modules/**', '**/*secret*']) {
-      expect(DIFF_EXCLUDES.includes(`:(exclude,glob,icase)${pattern}`)).toBe(true)
-    }
-    expect(DIFF_EXCLUDES.every(spec => spec.startsWith(':(exclude,glob,icase)'))).toBe(true)
-    expect(diffArgs()).toEqual(['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U2', '--relative', 'HEAD', '--', '.', ...DIFF_EXCLUDES])
-    expect(numstatArgs()).toEqual(['diff', '--numstat', '--no-color', '--no-ext-diff', '--no-textconv', '--relative', 'HEAD', '--', '.', ...DIFF_EXCLUDES])
+  test('the diff runs in two steps: a repository-wide name list, then literal allowed paths', async () => {
+    expect(nameStatusArgs()).toEqual(['diff', '--name-status', '-z', '-M', '-C', '--no-relative', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', ':/'])
+    const scope = ['--no-renames', '--relative', 'HEAD', '--', ':(literal)src/a b.ts', ':(literal)*:odd']
+    expect(diffArgs(['src/a b.ts', '*:odd'])).toEqual(['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-U2', ...scope])
+    expect(numstatArgs(['src/a b.ts', '*:odd'])).toEqual(['diff', '--numstat', '--no-color', '--no-ext-diff', '--no-textconv', ...scope])
     expect(logArgs()).toEqual(['log', '-n', '8', '--no-color', '--no-show-signature', '--format=%h%x09%s'])
+  })
+
+  test('parseNameStatus reads renames, copies and names with spaces from -z output', async () => {
+    const output = ['M', 'src/a b.ts', 'R100', '.env', 'sub/config.txt', 'C075', 'src/x.ts', 'src/y.ts', 'D', 'gone.ts', ''].join('\0')
+    expect(parseNameStatus(output)).toEqual([
+      { status: 'M', paths: ['src/a b.ts'] },
+      { status: 'R100', paths: ['.env', 'sub/config.txt'] },
+      { status: 'C075', paths: ['src/x.ts', 'src/y.ts'] },
+      { status: 'D', paths: ['gone.ts'] },
+    ])
+    expect(parseNameStatus('')).toEqual([])
+  })
+
+  test('parseNameStatus drops an entry cut short by a capped output', async () => {
+    // No closing NUL: the last path may be cut mid-name, so it is not trusted.
+    expect(parseNameStatus('M\0a.ts\0M\0src/partial')).toEqual([{ status: 'M', paths: ['a.ts'] }])
+    // A rename missing its new name is not read as two entries.
+    expect(parseNameStatus('M\0a.ts\0R100\0old.ts\0')).toEqual([{ status: 'M', paths: ['a.ts'] }])
+  })
+
+  test('planDiff blocks a rename or copy whose old or new name is secret-shaped', async () => {
+    const output = ['R100', '.env', 'config.txt', 'C090', 'id_ed25519', 'notes.txt', 'R095', 'src/a.ts', 'prod.pem', 'M', 'src/b.ts', 'D', '.env.local', ''].join('\0')
+    expect(planDiff(output, '', [], {})).toEqual({ paths: ['src/b.ts'], blocked: 4, omitted: 0 })
+  })
+
+  test('planDiff keeps the root subfolder only, relative to it, and blocks a rename in from above', async () => {
+    const output = ['R100', '.env', 'sub/config.txt', 'M', 'sub/with space.ts', 'M', 'other/c.ts', 'R100', 'sub/d.ts', 'other/d.ts', ''].join('\0')
+    expect(planDiff(output, 'sub/', [], {})).toEqual({ paths: ['with space.ts'], blocked: 1, omitted: 0 })
+  })
+
+  test('planDiff puts touched files first and counts the paths past the cap', async () => {
+    const paths = Array.from({ length: MAX_DIFF_PATHS + 2 }, (_, index) => `f${index}.ts`)
+    const output = `${paths.map(path => `M\0${path}`).join('\0')}\0`
+    const plan = planDiff(output, '', [{ path: 'f151.ts' }], {})
+    expect(plan.paths).toHaveLength(MAX_DIFF_PATHS)
+    expect(plan.paths[0]).toBe('f151.ts')
+    expect(plan.omitted).toBe(2)
+    expect(planDiff('', '', [], {})).toEqual({ paths: [], blocked: 0, omitted: 0 })
   })
 
   test('splitDiffByFile splits on diff --git headers', async () => {
@@ -285,6 +324,18 @@ describe('tutorDigest', () => {
     expect(digest.text.includes('Credentials')).toBe(false)
     expect(digest.text.includes('Prod.PEM')).toBe(false)
     expect(digest.files).toEqual(['src/a.ts'])
+  })
+
+  test('buildDigest uses only the planned paths and says how many were left out', async () => {
+    const diff = [fileDiff('src/a.ts', [hunk(1, 2)]), fileDiff('src/stray/inner.ts', ['@@ -1 +1 @@', '+STRAY_SENTINEL'])].join('\n')
+    const digest = buildDigest({ ...SOURCES, diff, numstat: '2\t0\tsrc/a.ts\n1\t0\tsrc/stray/inner.ts\n', plan: { paths: ['src/a.ts'], blocked: 1, omitted: 3 } })
+    expect(digest.text.includes('STRAY_SENTINEL')).toBe(false)
+    expect(digest.text.includes('src/stray')).toBe(false)
+    expect(digest.text).toContain('… 3 more changed files not shown')
+    expect(digest.files).toEqual(['src/a.ts'])
+    // An empty plan shows no diff even when git printed one.
+    const empty = buildDigest({ ...SOURCES, diff, plan: { paths: [], blocked: 0, omitted: 0 } })
+    expect(empty.text.includes('[diff]')).toBe(false)
   })
 
   test('buildDigest shows two full new files and skips a secret one', async () => {

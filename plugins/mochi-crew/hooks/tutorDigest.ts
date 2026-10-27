@@ -48,23 +48,6 @@ const MAX_TOOL_NAME = 60
 const CUT_MARK = '… (cut)'
 const PEM_REMOVED = '[private key removed]'
 
-/**
- * Pathspecs that keep secret-shaped and noisy files out of every git call, so their content
- * never leaves git at all. Each is `:(exclude,glob,icase)` plus a pattern; `icase` because the
- * patterns are lowercase and `Credentials.json` or `Prod.PEM` must not get past them.
- */
-export const DIFF_EXCLUDES: readonly string[] = [
-  '**/.env*',
-  '**/*.pem', '**/*.key', '**/*.p12', '**/*.pfx',
-  '**/id_rsa*', '**/id_ed25519*', '**/id_ecdsa*',
-  '**/*secret*', '**/*credential*',
-  '**/.npmrc', '**/.netrc',
-  '**/*.tfstate*',
-  '**/*.lock', '**/package-lock.json', '**/pnpm-lock.yaml', '**/yarn.lock',
-  '**/*.min.*',
-  '**/dist/**', '**/node_modules/**',
-].map(pattern => `:(exclude,glob,icase)${pattern}`)
-
 const SECRET_NAMES: ReadonlySet<string> = new Set(['.npmrc', '.netrc', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'])
 const SECRET_EXTENSIONS: readonly string[] = ['.pem', '.key', '.p12', '.pfx', '.lock']
 const SECRET_PREFIXES: readonly string[] = ['.env', 'id_rsa', 'id_ed25519', 'id_ecdsa']
@@ -81,9 +64,10 @@ const isSecretName = (segment: string): boolean => {
 }
 
 /**
- * Whether a path matches the DIFF_EXCLUDES rules, so it must never be read for the model: the
- * name rules apply to the basename and to every folder segment, and `dist` or `node_modules`
- * anywhere above it rules it out.
+ * Whether a path is secret-shaped or noise (a lockfile, a build output), so it must never be
+ * read for the model: the name rules apply to the basename and to every folder segment, and
+ * `dist` or `node_modules` anywhere above it rules it out. The one list every tutor read is
+ * filtered by, git's included.
  */
 export const isSecretPath = (path: string): boolean => {
   const segments = path.split(/[\\/]+/).filter(segment => segment !== '' && segment !== '.')
@@ -136,15 +120,80 @@ export const maskForModel = (text: string, maxChars: number, maxLine: number = M
 
 const DIFF_FLAGS: readonly string[] = ['--no-color', '--no-ext-diff', '--no-textconv']
 
-// `--relative` prints paths from the session root, not the repo top, so they match the paths the
-// session touched when the root is a subfolder of the repo.
-const DIFF_SCOPE: readonly string[] = ['--relative', 'HEAD', '--', '.', ...DIFF_EXCLUDES]
+/** Files the diff and numstat name at most; past it the rest are counted, not shown. */
+export const MAX_DIFF_PATHS = 150
 
-/** `git diff` of the work tree against HEAD, two lines of context, secret paths excluded, paths relative to the root. */
-export const diffArgs = (): readonly string[] => ['diff', ...DIFF_FLAGS, '-U2', ...DIFF_SCOPE]
+/**
+ * `git diff --name-status -z` of the whole repository against HEAD, renames and copies found.
+ * Repository-wide and without `--relative` on purpose: a pathspec or `--relative` limits the
+ * files before rename detection, so `git mv ../.env config.txt` would show only as a new
+ * `config.txt` and its secret would pass. NUL-separated, so no name needs unquoting.
+ */
+export const nameStatusArgs = (): readonly string[] => ['diff', '--name-status', '-z', '-M', '-C', '--no-relative', ...DIFF_FLAGS, 'HEAD', '--', ':/']
 
-/** `git diff --numstat` against HEAD, with the same exclusions and relative paths as the diff. */
-export const numstatArgs = (): readonly string[] => ['diff', '--numstat', ...DIFF_FLAGS, ...DIFF_SCOPE]
+// `literal` so a name holding `*` or `:` matches only itself.
+const literalSpecs = (paths: readonly string[]): readonly string[] => paths.map(path => `:(literal)${path}`)
+
+// Renames are off: each allowed path is diffed as itself, so no other file's content rides along.
+const diffScope = (paths: readonly string[]): readonly string[] => ['--no-renames', '--relative', 'HEAD', '--', ...literalSpecs(paths)]
+
+/** `git diff` of the allowed paths against HEAD, two lines of context, paths relative to the root. */
+export const diffArgs = (paths: readonly string[]): readonly string[] => ['diff', ...DIFF_FLAGS, '-U2', ...diffScope(paths)]
+
+/** `git diff --numstat` of the allowed paths against HEAD, scoped like the diff. */
+export const numstatArgs = (paths: readonly string[]): readonly string[] => ['diff', '--numstat', ...DIFF_FLAGS, ...diffScope(paths)]
+
+/** One `--name-status` entry: its status letter and score, and the paths it names (two for a rename or copy). */
+export type NameStatus = { readonly status: string; readonly paths: readonly string[] }
+
+/**
+ * `git diff --name-status -z` output split into entries. A rename (`R`) or copy (`C`) names its
+ * old path, then its new one. An entry cut short (the output was capped) is dropped whole.
+ */
+export const parseNameStatus = (output: string): readonly NameStatus[] => {
+  const tokens = output.split('\0')
+  // A complete output ends with a NUL; whatever follows the last one is a cut entry.
+  tokens.pop()
+  const entries: NameStatus[] = []
+  for (let index = 0; index < tokens.length;) {
+    const status = tokens[index] ?? ''
+    const count = /^[RC]/.test(status) ? 2 : 1
+    const paths = tokens.slice(index + 1, index + 1 + count)
+    if (status === '' || paths.length < count || paths.some(path => path === '')) break
+    entries.push({ status, paths })
+    index += 1 + count
+  }
+  return entries
+}
+
+/** What may be diffed for the model: root-relative paths, and how many were held back. */
+export type DiffPlan = { readonly paths: readonly string[]; readonly blocked: number; readonly omitted: number }
+
+/**
+ * The paths a digest may diff, from repository-wide `--name-status -z` output and the root's
+ * `rev-parse --show-prefix`. An entry is blocked when any path it names, old or new, is
+ * secret-shaped; one whose new path is outside the root is out of scope. The rest are ordered
+ * like the diff (touched first) and cut to `limit`.
+ */
+export const planDiff = (nameStatus: string, prefix: string, touched: readonly TouchedFile[], added: Readonly<Record<string, number>>, limit: number = MAX_DIFF_PATHS): DiffPlan => {
+  const allowed: string[] = []
+  const seen = new Set<string>()
+  let blocked = 0
+  for (const entry of parseNameStatus(nameStatus)) {
+    if (entry.paths.some(isSecretPath)) {
+      blocked += 1
+      continue
+    }
+    const path = entry.paths.at(-1) ?? ''
+    if (!path.startsWith(prefix)) continue
+    const relative = path.slice(prefix.length)
+    if (relative === '' || seen.has(relative)) continue
+    seen.add(relative)
+    allowed.push(relative)
+  }
+  const ordered = orderDiffFiles(allowed, touched, added)
+  return { paths: ordered.slice(0, limit), blocked, omitted: Math.max(0, ordered.length - limit) }
+}
 
 /** `git log` of the last 8 commits as `hash<TAB>subject`; no signature check runs gpg. */
 export const logArgs = (): readonly string[] => ['log', '-n', '8', '--no-color', '--no-show-signature', '--format=%h%x09%s']
@@ -335,6 +384,8 @@ export type DigestSources = {
   readonly rows: readonly TranscriptRow[]
   readonly touched: readonly TouchedFile[]
   readonly added: Readonly<Record<string, number>>
+  /** The paths planDiff allowed; register always passes it, and then nothing else of the diff or numstat is used. */
+  readonly plan?: DiffPlan
 }
 
 /**
@@ -375,14 +426,22 @@ const commitsText = (log: string | undefined): string =>
 
 type ChangedFile = { readonly path: string; readonly line: string }
 
-const changedFiles = (numstat: string | undefined): readonly ChangedFile[] =>
+// A path the plan did not allow is dropped even when git printed it (a directory a literal
+// pathspec matched, say).
+const isPlanned = (plan: DiffPlan | undefined): ((path: string) => boolean) => {
+  if (plan === undefined) return () => true
+  const paths = new Set(plan.paths)
+  return path => paths.has(path)
+}
+
+const changedFiles = (numstat: string | undefined, isAllowed: (path: string) => boolean): readonly ChangedFile[] =>
   (numstat ?? '').split('\n').flatMap((line): ChangedFile[] => {
     const match = /^(-|\d+)\t(-|\d+)\t(.+)$/.exec(line)
     if (match === null) return []
     const [, adds = '', dels = '', quoted = ''] = match
     const path = unquote(quoted)
     // Checked again here: the diff text is input, and a path git did not exclude must still not pass.
-    if (isSecretPath(path)) return []
+    if (isSecretPath(path) || !isAllowed(path)) return []
     // One line per file: a name holding a newline must not split into a forged line.
     const shown = safeText(path)
     return [{ path, line: adds === '-' ? `${shown} (binary)` : `${shown} +${adds} -${dels}` }]
@@ -424,7 +483,8 @@ const MAX_DIFF_MASKED = MAX_DIFF_FILE * 2
 // maskForModel stops at MAX_DIFF_MASKED, so a 1 MB diff is never redacted whole.
 const diffPart = (sources: DigestSources, budget: number): DiffPart => {
   // Checked again here: the diff text is input, and a path git did not exclude must still not pass.
-  const byPath = new Map(splitDiffByFile(sources.diff ?? '').filter(file => !isSecretPath(file.path)).map(file => [file.path, file.body]))
+  const isAllowed = isPlanned(sources.plan)
+  const byPath = new Map(splitDiffByFile(sources.diff ?? '').filter(file => !isSecretPath(file.path) && isAllowed(file.path)).map(file => [file.path, file.body]))
   const order = orderDiffFiles([...byPath.keys()], sources.touched, sources.added)
   const entries: string[] = []
   const files: string[] = []
@@ -458,11 +518,12 @@ const diffPart = (sources: DigestSources, budget: number): DiffPart => {
  */
 export const buildDigest = (sources: DigestSources): Digest => {
   const shown = fitting(newFilesOf(sources.newFiles), file => file.text, DIGEST_CAPS['new-files'])
-  const changed = changedFiles(sources.numstat)
+  const changed = changedFiles(sources.numstat, isPlanned(sources.plan))
+  const omitted = sources.plan?.omitted ?? 0
   const raw: Readonly<Record<Exclude<DigestSection, 'diff'>, string>> = {
     header: headerText(sources),
     commits: commitsText(sources.log),
-    changed: changed.map(file => file.line).join('\n'),
+    changed: [...changed.map(file => file.line), ...(omitted === 0 ? [] : [`… ${omitted} more changed file${omitted === 1 ? '' : 's'} not shown`])].join('\n'),
     'new-files': shown.map(file => file.text).join('\n'),
     layout: sources.focus === 'project' && sources.lsFiles !== undefined ? layoutSummary(sources.lsFiles, DIGEST_CAPS.layout) : '',
     asks: asksText(sources.rows),
