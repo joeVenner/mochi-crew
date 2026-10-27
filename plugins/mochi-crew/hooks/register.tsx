@@ -1861,8 +1861,9 @@ type CardsOutcome = 'opened' | 'empty' | 'refused'
 
 /**
  * `c` and `/mascot tutor cards` (A.2): a session over the deck, opened from Home, the summary,
- * an error or a finished session. Nothing is sent, so no consent is asked; a call or a round
- * on screen is not cut short, and is decided inside the update so a doubled press opens one.
+ * an error or a finished session. Nothing is sent, yet the reducer opens none over the notice,
+ * so a missing consent leaves the notice up. A call or a round on screen is not cut short, and
+ * that is decided inside the update so a doubled press opens one session.
  */
 const openCards = async ($: EngineInterface): Promise<CardsOutcome> => {
   await loadTutor($)
