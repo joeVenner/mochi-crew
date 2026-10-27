@@ -1105,6 +1105,9 @@ let tutorViewport: { readonly surface: RenderSurface; readonly columns: number; 
 // read off the screen (isLiveCall), never off this, so a stop needs no bump and a refused press
 // strands nothing.
 let tutorEpoch = 0
+// Bumped at session end: a call counts its spend only for the conversation it was sent in, so a
+// reply landing after a /clear never adds to the next one's total or latches its digest.
+let tutorGeneration = 0
 // The digest call's abort, the fork's watchdog and the loading spinner of the round in flight.
 // A continuation releases only the one it armed, so a stale one never stops a newer round's.
 let tutorAbort: AbortController | undefined
@@ -1311,16 +1314,20 @@ const claimTutor = async ($: EngineInterface, make: (current: TutorState, epoch:
   return claimed === undefined ? { state } : { state, epoch: claimed }
 }
 
-/** Adds one call's spend to this conversation's total; stale and failed calls count too (C.7). */
-const spendTutor = async ($: EngineInterface, usage: ModelUsage): Promise<void> => {
+/**
+ * Adds one call's spend to this conversation's total; stale and failed calls count too (C.7),
+ * but not once the conversation `generation` names has ended.
+ */
+const spendTutor = async ($: EngineInterface, usage: ModelUsage, generation: number): Promise<void> => {
+  if (generation !== tutorGeneration) return
   await update($, tutorSession, (current): TutorSession => ({ ...current, usage: addTutorUsage(current.usage, usage) }))
 }
 
 /** Counts a fork's spend, and latches the digest when its reply missed the cache, on time or late. */
-const noteFork = async ($: EngineInterface, result: ModelForkResult): Promise<void> => {
-  // Nothing to fork made no request.
-  if (!('usage' in result)) return
-  await spendTutor($, result.usage)
+const noteFork = async ($: EngineInterface, result: ModelForkResult, generation: number): Promise<void> => {
+  // Nothing to fork made no request; a reply from an ended conversation says nothing of this one's cache.
+  if (!('usage' in result) || generation !== tutorGeneration) return
+  await spendTutor($, result.usage, generation)
   // An API error's usage says nothing about the cache: only a reply's does.
   if ((result.isAnswered || result.reason === 'empty-reply') && isForkMiss(result.usage)) {
     await update($, tutorSession, (current): TutorSession => (current.isForkSuspect ? current : { ...current, isForkSuspect: true }))
@@ -1339,6 +1346,7 @@ const NOTHING_FORKED: ModelForkResult = { isAnswered: false, reason: 'nothing-to
  * cache miss still latches the digest.
  */
 const runFork = async ($: EngineInterface, prompt: string): Promise<ForkWait> => {
+  const generation = tutorGeneration
   const forked = $.model.fork({ prompt }).then(
     (result): ForkWait => ({ kind: 'result', result }),
     (error: unknown): ForkWait => {
@@ -1356,10 +1364,10 @@ const runFork = async ($: EngineInterface, prompt: string): Promise<ForkWait> =>
   try {
     const first = await Promise.race([forked, late])
     if (first.kind === 'result') {
-      await noteFork($, first.result)
+      await noteFork($, first.result, generation)
     } else {
       void forked
-        .then(settled => (settled.kind === 'result' ? noteFork($, settled.result) : undefined))
+        .then(settled => (settled.kind === 'result' ? noteFork($, settled.result, generation) : undefined))
         .catch((error: unknown) => $.ui.log(`mochi-crew: tutor could not count a late fork: ${String(error)}`, { to: 'debug' }))
     }
     return first
@@ -1383,11 +1391,12 @@ type CompleteCall = { readonly kind: 'result'; readonly result: ModelCompleteRes
 const runComplete = async ($: EngineInterface, request: ModelCompleteRequest, epoch: number): Promise<CompleteCall> => {
   const controller = new AbortController()
   tutorAbort = controller
+  const generation = tutorGeneration
   try {
     // Armed before the check, so a stop landing while it reads still aborts what is sent.
     if (!(await isLiveCall($, epoch)) || controller.signal.aborted) return { kind: 'stale' }
     const result = await $.model.complete(request, { signal: controller.signal })
-    await spendTutor($, result.usage)
+    await spendTutor($, result.usage, generation)
     return { kind: 'result', result }
   } catch (error: unknown) {
     $.ui.log(`mochi-crew: tutor model call was refused: ${String(error)}`, { to: 'debug' })
@@ -1986,6 +1995,7 @@ const focusOf = (state: Exclude<TutorState, { phase: 'closed' | 'consent' }>): T
  * conversation starts; the tab goes back Home. Progress already saved stays.
  */
 const endTutorSession = async ($: EngineInterface): Promise<void> => {
+  tutorGeneration += 1
   tutorDigest = null
   // The screen first: an aborted call settles at once, and must find its screen gone.
   await update($, tutor, (current): TutorState =>

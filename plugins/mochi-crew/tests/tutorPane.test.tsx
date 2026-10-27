@@ -1561,4 +1561,37 @@ describe('tutor races', () => {
     expect(record.completeRequests).toHaveLength(1)
     await ui.unmount()
   })
+
+  test('a reply that lands after session end counts in neither conversation', { plugins: [PROBE], options: { tutorContext: 'digest' } }, async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, completes: [{ ...reply(quiz(5), DIGEST_CALL), after: 30_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, 'Mochi is reading the diff…')
+    const ended = $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } })
+    await clock.settle()
+    await clock.advance(30_000)
+    await ended
+    const session = await probe($, 'tutorSession') as { usage: { calls: number; input: number } }
+    expect(session.usage.calls).toBe(0)
+    await ui.unmount()
+  })
+
+  test('a cold fork that answers after session end leaves the next conversation unlatched', { plugins: [PROBE] }, async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on, { saved: { tutorConsent: 2 }, git: { log: COMMITS }, forks: [{ ...reply(quiz(5), COLD_FORK), after: 30_000 }], clock })
+    await start($)
+    await warmUp($)
+    const ui = await tutorTab($)
+    await ui.press({ key: 'start:recent' })
+    await shows(ui, 'Mochi is reading the chat…')
+    const ended = $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } })
+    await clock.settle()
+    await clock.advance(30_000)
+    await ended
+    expect(await probe($, 'tutorSession')).toMatchObject({ usage: { calls: 0 }, isForkSuspect: false })
+    await ui.unmount()
+  })
 })
