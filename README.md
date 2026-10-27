@@ -140,6 +140,7 @@ XP rewards progress, not keystrokes:
 | Hiring a subagent | 5 |
 | Each session mission | 20 |
 | A Mochi Tutor answer | 5 right, 2 right with a hint, 3 partly right; a round earns at most 35 ([details](#mochi-tutor)) |
+| A due tutor flashcard rated good | 1, at most 10 per conversation |
 
 A test run only counts when the suite really ran and passed: `npm test || true`, `npm test | tee log`
 and `pytest --collect-only` don't.
@@ -343,6 +344,9 @@ when that is a file the round was shown.
 - **Choice** (2 to 4 options, press the number): after you answer, Mochi gives the reason the right
   option is right, and why the one you picked is not (when you got it right and the pane is tall
   enough, why another option is not).
+- **Which line** (2 to 4 lines of one code card, press the number): a choice whose options are
+  lines of the diff, read as `L42  <line>`, or `old L42` for a removed line. It is checked on your
+  machine, with no request, and explained like a choice.
 - **In your own words**: type an answer and press Enter. `tutorModel` checks it against a reference
   answer and its key points, and says `✓ solid`, `◐ partly` or `✕ missed`, with each point marked.
   `r` shows the answer instead and you grade yourself, as you also do if the check fails.
@@ -354,28 +358,61 @@ when that is a file the round was shown.
   file in your editor when it is one Claude or a subagent edited in this session, in the project
   itself rather than a worktree (terminal only).
 
+**Code cards.** A question can point at a line of the diff, and Mochi then draws that part of the
+change under the question, as a diff with its file and line (`src/x.ts · line 42`). The code is
+never written by the model: the model only names a file and quotes a line, and Mochi cuts the
+lines from a masked diff it made itself, so a masked secret stays masked on the card. A quote that
+doesn't match the diff exactly drops the code (and a which-line question whole). Only changes to
+files git tracks have code cards; a new file not yet added has none. A card shows up to
+16 lines, 8 in a short pane, and only its caption (`code: src/x.ts line 42 · make the pane taller
+to see it`) when the pane is too short. Questions and answers sit in a rounded frame: Claude's
+orange for a question or flashcard, green for a right answer, red for a wrong one, dim otherwise.
+
 The summary shows the score, XP and level, up to three `file · symbol` places to read next (from the
 questions you missed, half got, needed a hint for or skipped), and how many cards come back. `r`
 replays the missed questions without a request or XP, and `n` goes back to Home for a new round.
 
 **Review deck.** A question you missed, half got, skipped or needed a hint for becomes a card for
-this project. When a card is due, one joins each new round, and `r` on Home runs a review round of
+this project, and so does any other question you keep with `k` on its answer screen. When a card is
+due, one joins each new round, and `r` on Home runs a review round of
 up to five due cards with no request at all. A card answered right without a hint comes back after 3
 rounds, then 6, and is then retired as mastered; any other answer brings it back next round. A
 project keeps up to 20 cards. When the deck is full, the cards closest to mastered make room for new
-misses. Cards are saved questions, so they say `from an earlier round · the code may have changed`.
+misses and kept cards. Cards are saved questions, so they say `from an earlier round · the code may have changed`;
+a saved code card keeps the code as it was then.
+
+**Flashcards.** `c` on Home (`cards (12)`, or `cards (3 due)` when some are), on the summary or on
+the flashcards' tally, and `/mascot tutor cards`, go through the deck as flip cards: due cards
+first, then the rest, lowest box first, at most 10. The front shows the question and its code
+card; `f` flips it to the answer. Then rate how well you knew it:
+
+| Key | Rating | What happens to the card |
+|---|---|---|
+| `1` | again | back to the first box, due after the next round |
+| `2` | hard | stays in its box, due after the next round |
+| `3` | good | a due card moves up a box as a right review answer does, and from the last box is mastered; a card not due yet stays as it is (`not due yet: kept in box 2`), so flipping ahead can't cram it |
+
+The schedule counts quiz rounds, so a flashcard session never makes cards due by itself. Each rating
+is saved at once, so leaving partway keeps them. `x` ends the session with a tally
+(`Flashcards: 7 rated · 4 good · 2 hard · 1 again · +4 XP`, and how many are now mastered); from
+there `c` goes again and `h` goes Home. Flashcards make no request and send nothing, but they open
+only once the first-use notice is accepted.
 
 **XP and level.** Answers earn Mochi's XP: 5 for right, 2 for right with a hint, 3 for partly right,
 nothing for wrong or skipped. A perfect round of at least four questions with no hints adds 10, and a
-round earns at most 35. Review rounds earn half, with no bonus, and replays earn nothing. Apart from
+round earns at most 35. Review rounds earn half, with no bonus, and replays earn nothing. A
+flashcard rated good when it was due earns 1, at most 10 per conversation, and other ratings earn
+nothing. Apart from
 that, the tutor keeps a level from 1 to 3 for each project (`LV` on Home). Two rounds in a row of at
 least four questions at 80% or more, with at most one hint, move it up; a round at 40% or less moves it down. Level 1 asks
 what and how, level 2 asks why, and level 3 asks about trade-offs and what breaks if something
 changes. Topics you mastered are not asked again, and recent misses are.
 
-While a question is on screen, the main HUD reads `quizzing you · q 2/5`.
+While a question is on screen, the main HUD reads `quizzing you · q 2/5`, and during flashcards
+`flashcards · 3/10`.
 
-**Mobile.** Every screen works by its buttons. Choice questions work as usual. Questions in your own
+**Mobile.** Every screen works by its buttons. Choice and which-line questions and flashcards work
+as usual. Questions in your own
 words show the answer and you grade yourself, and there are no follow-ups.
 
 **Settings,** in `/config`:
@@ -413,15 +450,20 @@ In the tutor tab:
 | `1` `2` `3` | on Home, start a round on recent changes, the last turn or the big picture |
 | `r` | on Home, review missed questions; on a question in your own words, show the answer; on the summary, replay the missed ones |
 | `g` | on Home, use the digest for the next round, or go back to the session (shown only when the round would be a fork) |
-| `1`-`4` | answer a choice question |
+| `c` | on Home, the summary or the flashcards' tally, start flashcards (shown while the deck holds a card) |
+| `1`-`4` | answer a choice or which-line question |
 | Enter | check a typed answer, or send a follow-up |
 | Tab | move between the text field and the buttons (follow-ups are asked in the `ask` field) |
 | `h` · `s` | show the hint, skip the question |
 | `1` `2` `3` | after a revealed answer: I had it, partly, I missed it |
 | `n` | next question, or finish; on the summary, back to Home for a new round |
+| `k` | on an answer, keep the question as a flashcard (gone once the deck holds it, and not on review questions) |
 | `o` | open the question's file in your editor (terminal only, and only a file edited in this session) |
+| `f` | on a flashcard, flip it |
+| `1` `2` `3` | on a flashcard's answer: again, hard, good |
+| `h` | on the flashcards' tally, back to Home |
 | `t` · `d` | after an error, try again, or try the digest instead (after a failed fork) |
-| `x` | close, end the round, cancel a request, or stop waiting for a fork |
+| `x` | close, end the round, cancel a request, or stop waiting for a fork; on a flashcard, end the session with its tally (or go Home if nothing was rated) |
 | Esc | hand the keys back to the prompt; the round waits |
 
 Every key is also a button you can click.
@@ -439,6 +481,7 @@ Commands:
 /mascot tutor                  open the Mochi Tutor tab
 /mascot tutor start | digest   start a round as the `ctx` line says, or always from the digest
 /mascot tutor review           a review round of missed questions, with no model request
+/mascot tutor cards            flashcards over this project's review deck, with no model request
 /mascot tutor stop             end the round, or stop waiting for a reply
 /mascot tutor reset            clear this project's tutor level, rounds and review deck, and the
                                notice's yes (shared by every project, so the next round asks again)
@@ -484,7 +527,14 @@ Commands:
   reference answer and key points, and your answer. A follow-up sends the question with its answer
   and reasons, your answer, your last two follow-ups on it, your message and, on a digest round, the
   diff excerpt of the question's file. The digest, grading and follow-ups never include tool output,
-  command text or other file contents.
+  command text or other file contents. Flashcards and which-line answers make no request and send
+  nothing.
+- **Code cards show only masked diff, and send none.** On a digest round a card is cut from the
+  excerpt the digest already sent. On a fork round, when the reply points at files (at most 5, all
+  edited in this session in the project itself), Mochi runs one more local `git diff` for just those
+  files, in the same two steps, with the same rename check, masking, 1 MB cap and timeout as the
+  digest. Its output is only drawn: it is never sent, follow-ups included. If git fails, the
+  questions stay and lose only their code.
 - **Files meant for secrets are never diffed or read.** They are matched by name, in any folder and
   ignoring case: `.env*`, `*secret*`, `*credential*`, private keys (`id_rsa*`, `id_dsa*`,
   `id_ecdsa*`, `id_ed25519*`, `*.key`, `*.pem`, `*.p8`, `*.ppk`), certificate and key stores
@@ -530,9 +580,11 @@ Commands:
   badges persist in Claude Code's per-plugin store. So do the session badge switch and, for the 300
   most recent sessions, each one's color, a title you pinned and the last few titles Mochi set,
   which include Claude Code's topic for that session. So do the tutor's consent (one for every project) and, for up to 12
-  projects, each one's tutor level, streak and round count, up to 20 missed questions to review
-  (with their options and reasons, as the model wrote them), and the topics mastered and recently
-  missed. The session journal, missions, meter and the tree's touched files reset every session,
+  projects (fewer when their decks are large, as the oldest projects go first to keep the store
+  small), each one's tutor level, streak and round count, up to 20 missed or kept questions to review
+  (with their options and reasons, as the model wrote them, and for a code card up to 16 lines and
+  1,600 characters of Mochi's own masked diff), and the topics mastered and recently missed. The
+  session journal, missions, meter and the tree's touched files reset every session,
   and so does a tutor round left unfinished.
 
 ## Development
@@ -578,7 +630,7 @@ state and the pane.
 | `fileTree.ts` · `editor.ts` | file tree: git parsing, the focused tree and its window; the editor launcher |
 | `meter.ts` · `meterRows.ts` · `meterAlerts.ts` · `meterReport.ts` | session meter: provider detection and figures, HUD rows, alerts, `/mascot meter` |
 | `badge.ts` · `badgePalette.ts` · `badgeTitle.ts` · `badgeTty.ts` · `badgeTerminal.ts` · `badgeRecords.ts` · `badgeCommand.ts` | session badge: lifecycle, colors, titles, finding the tab, Terminal.app, saved records, `/mascot badge` |
-| `tutorPlan.ts` · `tutorDigest.ts` · `tutorPrompt.ts` · `tutorParse.ts` · `tutorRound.ts` · `tutorProgress.ts` · `tutorView.ts` | Mochi Tutor: fork or digest, the masked digest, prompts, quiz parsing, rounds and scoring, saved progress, the tab's rows |
+| `tutorPlan.ts` · `tutorDigest.ts` · `tutorPrompt.ts` · `tutorParse.ts` · `tutorRound.ts` · `tutorProgress.ts` · `tutorCards.ts` · `tutorCode.ts` · `tutorView.ts` | Mochi Tutor: fork or digest, the masked digest, prompts, quiz parsing, rounds and scoring, saved progress, flashcards and kept cards, code cards cut from the diff, the tab's rows |
 
 ## License
 
