@@ -29,6 +29,16 @@ export type CodeLookup = (file: string) => readonly Hunk[]
 /** A lookup with nothing in it: every anchor is unresolvable. */
 export const NO_CODE: CodeLookup = () => []
 
+/** A file's masked excerpt by own key only, so a file named like an Object method (`constructor`) reads nothing. */
+export const ownExcerpt = (excerpts: Readonly<Record<string, string>>, file: string): string | undefined =>
+  Object.hasOwn(excerpts, file) ? excerpts[file] : undefined
+
+/**
+ * The lookup over a round's masked excerpts, keyed by file: what a digest sent, or what a fork
+ * round's local diff read. A file without one, or whose excerpt is no diff, has no hunks.
+ */
+export const excerptLookup = (excerpts: Readonly<Record<string, string>>): CodeLookup => file => parseHunks(ownExcerpt(excerpts, file) ?? '')
+
 // Nine digits keep every number a safe integer; a real file never has a billion lines.
 const HUNK_HEADER = /^@@ -(\d{1,9})(?:,(\d{1,9}))? \+(\d{1,9})(?:,(\d{1,9}))? @@/
 
