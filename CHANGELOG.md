@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-27
+
 ### Added
 
 - Mochi Tutor flashcards: press `c` on Home or the summary (or run `/mochi tutor cards`) to go
