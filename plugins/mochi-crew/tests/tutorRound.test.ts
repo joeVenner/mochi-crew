@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { ChoiceQuestion, ExplainQuestion, TutorAnswer, TutorQuestion, TutorRound, TutorState } from '../types'
+import type { ChoiceQuestion, ExplainQuestion, LineQuestion, TutorAnswer, TutorQuestion, TutorRound, TutorState } from '../types'
 import {
   EMPTY_USAGE,
   FOLLOW_UPS_PER_QUESTION,
@@ -48,6 +48,20 @@ const explain = (id: string, over: Partial<ExplainQuestion> = {}): ExplainQuesti
   reference: 'By the longest matching worktree root.',
   keyPoints: ['longest root wins', 'main root otherwise'],
   hint: 'Think about nesting.',
+  ...over,
+})
+
+const line = (id: string, over: Partial<LineQuestion> = {}): LineQuestion => ({
+  id,
+  kind: 'line',
+  tag: 'how',
+  topic: `topic ${id}`,
+  prompt: 'Which line stops the read from locking the index?',
+  options: ["const args = ['--no-optional-locks']", 'const root = await findRoot()', 'return run(args)'],
+  answer: 0,
+  why: ['right: the flag is set here', 'wrong: this finds the folder', 'wrong: this only runs it'],
+  lineNumbers: [12, 14, 15],
+  code: { file: 'hooks/register.tsx', diff: "@@ -12,0 +12,4 @@\n+const args = ['--no-optional-locks']\n+\n+const root = await findRoot()\n+return run(args)", focusLine: 12 },
   ...over,
 })
 
@@ -212,6 +226,30 @@ describe('tutor round', () => {
     expect(roundOf(wrong).answers[0]?.outcome).toBe('wrong')
     expect(gradeChoice(choice('x', { answer: 3 }), 3)).toBe('right')
     expect(gradeChoice(choice('x', { answer: 3 }), 1)).toBe('wrong')
+  })
+
+  test('choose on a line question grades it locally like a choice', async () => {
+    const state: TutorState = { phase: 'question', round: round([line('r1:0', { answer: 2 }), choice('r1:1'), choice('r1:2')]) }
+    const right = applyTutor(state, { kind: 'chose', index: 2 })
+    expect(right.phase).toBe('feedback')
+    expect(roundOf(right).answers).toEqual([{ questionId: 'r1:0', outcome: 'right', hasUsedHint: false, picked: 2 }])
+    expect(roundOf(applyTutor(state, { kind: 'chose', index: 0 })).answers[0]?.outcome).toBe('wrong')
+    expect(gradeChoice(line('x', { answer: 1 }), 1)).toBe('right')
+    expect(gradeChoice(line('x', { answer: 1 }), 0)).toBe('wrong')
+    // Out of range, not an integer, or a reveal (explain only): nothing happens.
+    expect(applyTutor(state, { kind: 'chose', index: 3 })).toBe(state)
+    expect(applyTutor(state, { kind: 'chose', index: -1 })).toBe(state)
+    expect(applyTutor(state, { kind: 'chose', index: 0.5 })).toBe(state)
+    expect(applyTutor(state, { kind: 'reveal' })).toBe(state)
+    expect(applyTutor(state, { kind: 'skip' }).phase).toBe('feedback')
+  })
+
+  test('line questions keep their file order on replay and retry', async () => {
+    const question = line('old:4', { answer: 1 })
+    expect(replayQuestion(question, 41)).toEqual({ ...question, isReview: true })
+    const played = round([question, choice('r1:1'), choice('r1:2')], { answers: [answer('old:4', 'wrong'), answer('r1:1', 'right'), answer('r1:2', 'right')] })
+    const retry = applyTutor({ phase: 'summary', round: played, xp: 5, levelBefore: 1, levelAfter: 1, wasForkMiss: false }, { kind: 'retry-missed', epoch: 9, at: 0 })
+    expect(roundOf(retry).questions).toEqual([question])
   })
 
   test('choose on an explain question is ignored', async () => {
